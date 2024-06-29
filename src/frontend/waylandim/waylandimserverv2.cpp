@@ -6,6 +6,7 @@
  */
 #include "waylandimserverv2.h"
 #include <sys/mman.h>
+#include <ctime>
 #include "fcitx-utils/keysymgen.h"
 #include "fcitx-utils/unixfd.h"
 #include "fcitx-utils/utf8.h"
@@ -99,8 +100,9 @@ void WaylandIMServerV2::refreshSeat() {
         if (icMap_.count(seat.get())) {
             continue;
         }
-        auto *ic =
-            new WaylandIMInputContextV2(inputContextManager(), this, seat);
+        auto *ic = new WaylandIMInputContextV2(
+            inputContextManager(), this, seat,
+            virtualKeyboardManagerV1_->createVirtualKeyboard(seat.get()));
         ic->setFocusGroup(group_);
         ic->setCapabilityFlags(baseFlags);
     }
@@ -120,10 +122,11 @@ void WaylandIMServerV2::remove(wayland::WlSeat *seat) {
 
 WaylandIMInputContextV2::WaylandIMInputContextV2(
     InputContextManager &inputContextManager, WaylandIMServerV2 *server,
-    std::shared_ptr<wayland::WlSeat> seat)
+    std::shared_ptr<wayland::WlSeat> seat, wayland::ZwpVirtualKeyboardV1 *vk)
     : VirtualInputContextGlue(inputContextManager), server_(server),
       seat_(std::move(seat)),
-      ic_(server->inputMethodManagerV2()->getInputMethod(seat_.get())) {
+      ic_(server->inputMethodManagerV2()->getInputMethod(seat_.get())),
+      vk_(vk) {
     server->add(this, seat_.get());
     ic_->surroundingText().connect(
         [this](const char *text, uint32_t cursor, uint32_t anchor) {
@@ -143,6 +146,7 @@ WaylandIMInputContextV2::WaylandIMInputContextV2(
         if (pendingDeactivate_) {
             pendingDeactivate_ = false;
             keyboardGrab_.reset();
+            repeatInfo_.reset();
             // This is the only place we update wayland xkb mask, so it is ok to
             // reset it to 0. This breaks the caps lock or num lock. But we have
             // no other option until we can listen to the mod change globally.
@@ -160,19 +164,13 @@ WaylandIMInputContextV2::WaylandIMInputContextV2(
                                     Key(FcitxKey_None, KeyStates(), vkkey + 8),
                                     WL_KEYBOARD_KEY_STATE_RELEASED);
                     }
+                    vk_->modifiers(0, 0, 0, 0);
                 }
                 focusOutWrapper();
             }
-            vk_.reset();
-            vkReady_ = false;
         }
         if (pendingActivate_) {
             pendingActivate_ = false;
-            vk_.reset();
-            vkReady_ = false;
-            vk_.reset(
-                server_->virtualKeyboardManagerV1()->createVirtualKeyboard(
-                    seat_.get()));
             // There can be only one grab. Always release old grab first.
             // It is possible when switching between two client, there will be
             // two activate. In that case we will have already one grab. The
@@ -202,7 +200,6 @@ WaylandIMInputContextV2::WaylandIMInputContextV2(
                     [this](int32_t rate, int32_t delay) {
                         repeatInfoCallback(rate, delay);
                     });
-                repeatInfoCallback(repeatRate_, repeatDelay_);
                 focusInWrapper();
             }
         }
@@ -216,7 +213,7 @@ WaylandIMInputContextV2::WaylandIMInputContextV2(
     });
     ic_->unavailable().connect([]() { WAYLANDIM_DEBUG() << "UNAVAILABLE"; });
     timeEvent_ = server_->instance()->eventLoop().addTimeEvent(
-        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC), 0,
+        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC), 1,
         [this](EventSourceTime *, uint64_t) {
             repeat();
             return true;
@@ -249,7 +246,7 @@ void WaylandIMInputContextV2::repeat() {
     if (!ic->keyEvent(event)) {
         sendKeyToVK(repeatTime_, event.rawKey(), WL_KEYBOARD_KEY_STATE_PRESSED);
     }
-    uint64_t interval = 1000000 / repeatRate_;
+    uint64_t interval = 1000000 / repeatRate();
     timeEvent_->setTime(timeEvent_->time() + interval);
     timeEvent_->setOneShot();
 }
@@ -423,7 +420,7 @@ void WaylandIMInputContextV2::keymapCallback(uint32_t format, int32_t fd,
     server_->stateMask_.mod5_mask =
         1 << xkb_keymap_mod_get_index(server_->keymap_.get(), "Mod5");
 
-    if (keymapChanged || !vkReady_) {
+    if (keymapChanged) {
         vk_->keymap(format, scopeFD.fd(), size);
         vkReady_ = true;
     }
@@ -457,13 +454,13 @@ void WaylandIMInputContextV2::keyCallback(uint32_t serial, uint32_t time,
         timeEvent_->setEnabled(false);
     } else if (state == WL_KEYBOARD_KEY_STATE_PRESSED &&
                xkb_keymap_key_repeats(server_->keymap_.get(), code)) {
-        if (repeatRate_) {
+        if (repeatRate() > 0) {
             repeatKey_ = key;
             repeatTime_ = time;
             repeatSym_ = event.rawKey().sym();
             // Let's trick the key event system by fake our first.
             // Remove 100 from the initial interval.
-            timeEvent_->setNextInterval(repeatDelay_ * 1000 - repeatHackDelay);
+            timeEvent_->setNextInterval(repeatDelay() * 1000 - repeatHackDelay);
             timeEvent_->setOneShot();
         }
     }
@@ -485,7 +482,7 @@ void WaylandIMInputContextV2::keyCallback(uint32_t serial, uint32_t time,
         WAYLANDIM_DEBUG() << "Engine handling speed can not keep up with key "
                              "repetition rate.";
         timeEvent_->setNextInterval(
-            std::min(1000, repeatDelay_ * 1000 - repeatHackDelay));
+            std::clamp(repeatDelay() * 1000 - repeatHackDelay, 0, 1000));
     }
 }
 void WaylandIMInputContextV2::modifiersCallback(uint32_t /*serial*/,
@@ -539,8 +536,7 @@ void WaylandIMInputContextV2::modifiersCallback(uint32_t /*serial*/,
 }
 
 void WaylandIMInputContextV2::repeatInfoCallback(int32_t rate, int32_t delay) {
-    repeatRate_ = rate;
-    repeatDelay_ = delay;
+    repeatInfo_ = std::make_tuple(rate, delay);
 }
 
 void WaylandIMInputContextV2::sendKeyToVK(uint32_t time, const Key &key,
@@ -672,4 +668,13 @@ void WaylandIMInputContextV2::deleteSurroundingTextDelegate(
                                startBytes + sizeBytes - cursorBytes);
     ic_->commit(serial_);
 }
+
+int32_t WaylandIMInputContextV2::repeatRate() const {
+    return server_->repeatRate(seat_, repeatInfo_);
+}
+
+int32_t WaylandIMInputContextV2::repeatDelay() const {
+    return server_->repeatDelay(seat_, repeatInfo_);
+}
+
 } // namespace fcitx

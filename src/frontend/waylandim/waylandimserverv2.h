@@ -41,7 +41,6 @@ public:
     FocusGroup *group() { return group_; }
     auto *xkbState() { return state_.get(); }
     auto *inputMethodManagerV2() { return inputMethodManagerV2_.get(); }
-    auto *virtualKeyboardManagerV1() { return virtualKeyboardManagerV1_.get(); }
 
     bool hasKeyboardGrab() const;
 
@@ -73,7 +72,8 @@ class WaylandIMInputContextV2 : public VirtualInputContextGlue {
 public:
     WaylandIMInputContextV2(InputContextManager &inputContextManager,
                             WaylandIMServerV2 *server,
-                            std::shared_ptr<wayland::WlSeat> seat);
+                            std::shared_ptr<wayland::WlSeat> seat,
+                            wayland::ZwpVirtualKeyboardV1 *vk);
     ~WaylandIMInputContextV2() override;
 
     const char *frontend() const override { return "wayland_v2"; }
@@ -115,6 +115,9 @@ private:
     void repeatInfoCallback(int32_t rate, int32_t delay);
     void sendKeyToVK(uint32_t time, const Key &key, uint32_t state) const;
 
+    int32_t repeatRate() const;
+    int32_t repeatDelay() const;
+
     WaylandIMServerV2 *server_;
     std::shared_ptr<wayland::WlSeat> seat_;
     std::unique_ptr<wayland::ZwpInputMethodV2> ic_;
@@ -134,7 +137,7 @@ private:
     uint32_t repeatTime_ = 0;
     KeySym repeatSym_ = FcitxKey_None;
 
-    int32_t repeatRate_ = 40, repeatDelay_ = 400;
+    std::optional<std::tuple<int32_t, int32_t>> repeatInfo_;
 
     mutable OrderedMap<uint32_t, uint32_t> pressedVKKey_;
 };

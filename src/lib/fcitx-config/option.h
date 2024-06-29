@@ -13,7 +13,7 @@
 #include <string>
 #include <type_traits>
 #include <fcitx-config/marshallfunction.h>
-#include <fcitx-config/option_details.h>
+#include <fcitx-config/option_details.h> // IWYU pragma: export
 #include <fcitx-config/optiontypename.h>
 #include <fcitx-config/rawconfig.h>
 
@@ -448,6 +448,21 @@ template <typename T, typename Constrain, typename Marshaller,
 struct ConditionalHiddenHelper<true,
                                Option<T, Constrain, Marshaller, Annotation>> {
     using OptionType = HiddenOption<T, Constrain, Marshaller, Annotation>;
+};
+
+template <>
+struct ConditionalHiddenHelper<false, SubConfigOption> {
+    using OptionType = SubConfigOption;
+};
+
+template <>
+struct ConditionalHiddenHelper<true, SubConfigOption> {
+    class HiddenSubConfigOption : public SubConfigOption {
+    public:
+        using SubConfigOption::SubConfigOption;
+        bool skipDescription() const { return true; }
+    };
+    using OptionType = HiddenSubConfigOption;
 };
 
 template <bool hidden, typename T>
