@@ -7,13 +7,16 @@
 #ifndef _FCITX_GLOBALCONFIG_H_
 #define _FCITX_GLOBALCONFIG_H_
 
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
+#include <fcitx-config/configuration.h>
 #include <fcitx-config/rawconfig.h>
 #include <fcitx-utils/key.h>
 #include <fcitx-utils/macros.h>
+#include <fcitx/fcitxcore_export.h>
 #include <fcitx/inputcontextmanager.h>
-#include "fcitxcore_export.h"
 
 namespace fcitx {
 
@@ -28,6 +31,19 @@ public:
     const KeyList &altTriggerKeys() const;
     const KeyList &activateKeys() const;
     const KeyList &deactivateKeys() const;
+
+    /**
+     * Consume Activate/Deactivate keys even when the state does not change.
+     *
+     * When enabled, pressing an activate key while the input method is
+     * already active (or a deactivate key while inactive) is consumed by
+     * fcitx instead of being forwarded to the application. Modifier only
+     * keys are not affected.
+     *
+     * @return whether to consume redundant activate/deactivate keys
+     * @since 5.1.22
+     */
+    bool consumeRedundantActivateKeys() const;
     const KeyList &enumerateForwardKeys() const;
     const KeyList &enumerateBackwardKeys() const;
     bool enumerateSkipFirst() const;
@@ -109,6 +125,29 @@ public:
      */
     int autoSavePeriod() const;
 
+    /**
+     * Number of milliseconds that modifier only key can be triggered with key
+     * release.
+     *
+     * @return timeout
+     * @since 5.1.12
+     */
+    int modifierOnlyKeyTimeout() const;
+
+    /**
+     * Helper function to check whether the modifier only key should be
+     * triggered.
+     *
+     * The user may need to record the time when the corresponding modifier only
+     * key is pressed. The input time should use CLOCK_MONOTONIC.
+     *
+     * If timeout < 0, always return true.
+     * Otherwise, check if it should be triggered based on current time.
+     *
+     * @return should trigger modifier only key
+     */
+    bool checkModifierOnlyKeyTimeout(uint64_t lastPressedTime) const;
+
     const std::vector<std::string> &enabledAddons() const;
     const std::vector<std::string> &disabledAddons() const;
 
@@ -121,6 +160,7 @@ public:
     void save(RawConfig &rawConfig) const;
     bool safeSave(const std::string &path = "config") const;
     const Configuration &config() const;
+    Configuration &config();
 
 private:
     std::unique_ptr<GlobalConfigPrivate> d_ptr;

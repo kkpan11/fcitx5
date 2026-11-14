@@ -7,18 +7,33 @@
 #ifndef _FCITX_IM_KEYBOARD_KEYBOARD_H_
 #define _FCITX_IM_KEYBOARD_KEYBOARD_H_
 
+#include <functional>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #include "fcitx-config/configuration.h"
+#include "fcitx-config/enum.h"
 #include "fcitx-config/iniparser.h"
-#include "fcitx-utils/event.h"
+#include "fcitx-config/option.h"
+#include "fcitx-config/rawconfig.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/handlertable.h"
 #include "fcitx-utils/i18n.h"
 #include "fcitx-utils/inputbuffer.h"
+#include "fcitx-utils/key.h"
+#include "fcitx-utils/misc.h"
 #include "fcitx/addonfactory.h"
+#include "fcitx/addoninstance.h"
 #include "fcitx/addonmanager.h"
+#include "fcitx/event.h"
 #include "fcitx/inputcontextproperty.h"
 #include "fcitx/inputmethodengine.h"
 #include "fcitx/instance.h"
 #include "compose.h"
-#include "isocodes.h"
 #include "keyboard_public.h"
 #include "longpress.h"
 #include "quickphrase_public.h"
@@ -32,8 +47,8 @@ FCITX_CONFIG_ENUM_NAME_WITH_I18N(ChooseModifier, N_("None"), N_("Alt"),
 
 FCITX_CONFIGURATION(
     KeyboardEngineConfig,
-    Option<int, IntConstrain> pageSize{this, "PageSize", _("Page size"), 5,
-                                       IntConstrain(3, 10)};
+    Option<int, IntConstrain> pageSize{
+        this, "PageSize", _("Candidates per page"), 5, IntConstrain(3, 10)};
     KeyListOption prevCandidate{
         this,
         "PrevCandidate",
@@ -76,16 +91,18 @@ FCITX_CONFIGURATION(
            "matching sequence.")}};
     SubConfigOption spell{this, "Spell", _("Spell"),
                           "fcitx://config/addon/spell"};
-    Option<bool> enableLongPress{this, "EnableLongPress",
-                                 _("Type special characters with long press"),
-                                 false};
-    Option<std::vector<std::string>> blocklistApplicationForLongPress{
-        this,
-        "LongPressBlocklist",
-        _("Applications disabled for long press"),
-        {"konsole"}};
-    SubConfigOption longPress{this, "LongPress", _("Long Press behavior"),
-                              "fcitx://config/addon/keyboard/longpress"};);
+    ConditionalHidden<isApple(), Option<bool>> enableLongPress{
+        this, "EnableLongPress", _("Type special characters with long press"),
+        false};
+    ConditionalHidden<isApple(), Option<std::vector<std::string>>>
+        blocklistApplicationForLongPress{
+            this,
+            "LongPressBlocklist",
+            _("Applications disabled for long press"),
+            {"konsole", "org.kde.konsole"}};
+    ConditionalHidden<isApple(), SubConfigOption> longPress{
+        this, "LongPress", _("Long Press behavior"),
+        "fcitx://config/addon/keyboard/longpress"};);
 
 class KeyboardEngine;
 
@@ -112,7 +129,7 @@ struct KeyboardEngineState : public InputContextProperty {
     bool handleLongPress(const KeyEvent &event);
     bool handleSpellModeTrigger(const InputMethodEntry &entry,
                                 const KeyEvent &event);
-    bool handleCandidateSelection(const KeyEvent &event);
+    bool handleCandidateSelection(const KeyEvent &event) const;
     std::tuple<std::string, bool> handleCompose(const KeyEvent &event);
     bool handleBackspace(const InputMethodEntry &entry);
 
@@ -125,7 +142,7 @@ struct KeyboardEngineState : public InputContextProperty {
 
     void updateCandidate(const InputMethodEntry &entry);
     // Update preedit and send ui update.
-    void setPreedit();
+    void setPreedit() const;
 
     // Return true if chr is pushed to buffer.
     // Return false if chr will be skipped by buffer, usually this means caller
@@ -152,7 +169,8 @@ public:
 
     const Configuration *getSubConfig(const std::string &path) const override;
 
-    void setSubConfig(const std::string &, const fcitx::RawConfig &) override;
+    void setSubConfig(const std::string & /*unused*/,
+                      const fcitx::RawConfig & /*unused*/) override;
 
     void reset(const InputMethodEntry &entry,
                InputContextEvent &event) override;
@@ -182,7 +200,7 @@ public:
                  const std::vector<std::string> &languages)> &callback);
 
     bool isBlockedForLongPress(const std::string &program) const {
-        return longPressBlocklistSet_.count(program) > 0;
+        return longPressBlocklistSet_.contains(program);
     }
     const auto &longPressData() const { return longPressData_; }
     bool supportHint(const std::string &language);

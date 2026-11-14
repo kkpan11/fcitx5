@@ -17,16 +17,17 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
-#include "fcitxutils_export.h"
-#include "stringutils_details.h"
+#include <fcitx-utils/fcitxutils_export.h>
+#include <fcitx-utils/stringutils_details.h> // IWYU pragma: export
 
 namespace fcitx::stringutils {
 
 /// \brief Check if a string starts with a prefix.
-FCITXUTILS_EXPORT bool startsWith(std::string_view str,
-                                  std::string_view prefix);
+FCITXUTILS_DEPRECATED_EXPORT bool startsWith(std::string_view str,
+                                             std::string_view prefix);
 
 /// \brief Check if a string starts with a prefix char.
 inline bool startsWith(std::string_view str, char prefix) {
@@ -34,7 +35,8 @@ inline bool startsWith(std::string_view str, char prefix) {
 }
 
 /// \brief Check if a string ends with a suffix.
-FCITXUTILS_EXPORT bool endsWith(std::string_view str, std::string_view suffix);
+FCITXUTILS_DEPRECATED_EXPORT bool endsWith(std::string_view str,
+                                           std::string_view suffix);
 
 /// \brief Check if a string ends with a suffix char.
 inline bool endsWith(std::string_view str, char suffix) {
@@ -44,8 +46,8 @@ inline bool endsWith(std::string_view str, char suffix) {
 /// \brief Check if a string is a concatenation of two other strings
 inline bool isConcatOf(std::string_view str, std::string_view sub1,
                        std::string_view sub2) {
-    return str.size() == sub1.size() + sub2.size() && startsWith(str, sub1) &&
-           endsWith(str, sub2);
+    return str.size() == sub1.size() + sub2.size() && str.starts_with(sub1) &&
+           str.ends_with(sub2);
 }
 
 /// \brief Trim the whitespace by returning start end end of first and list non
@@ -58,8 +60,7 @@ trimInplace(std::string_view str);
 /// \brief Trim the white space in string view
 /// \see trimInplace
 /// \since 5.0.16
-FCITXUTILS_EXPORT
-std::string_view trimView(std::string_view);
+FCITXUTILS_EXPORT std::string_view trimView(std::string_view);
 
 /// \brief Trim the white space in str.
 /// \see trimInplace
@@ -69,11 +70,42 @@ FCITXUTILS_EXPORT std::string trim(std::string_view str);
 FCITXUTILS_EXPORT std::vector<std::string> split(std::string_view str,
                                                  std::string_view delim);
 
-enum class SplitBehavior { KeepEmpty, SkipEmpty };
+enum class SplitBehavior {
+    /// Keep empty fields. Note that splitting an empty string yields {""}.
+    KeepEmpty,
+    /// Skip empty fields. Splitting an empty string yields an empty result.
+    SkipEmpty,
+};
 
-/// \brief Split the string by delim.
+/**
+ * \brief Split the string by delim.
+ *
+ * Note that when str is empty, SplitBehavior::SkipEmpty returns an empty
+ * vector, whereas SplitBehavior::KeepEmpty returns a vector containing a single
+ * empty string {""}.
+ */
 FCITXUTILS_EXPORT std::vector<std::string>
 split(std::string_view str, std::string_view delim, SplitBehavior behavior);
+
+/**
+ * \brief Split the string into a lazy range of views by any character in delim.
+ *
+ * Splitting does not allocate memory. The storage referenced by str and delim
+ * must remain valid during iteration. The returned string views refer to str.
+ *
+ * Consistent with split(), when str is empty, SplitBehavior::SkipEmpty yields
+ * an empty range, whereas SplitBehavior::KeepEmpty yields a range containing a
+ * single empty string_view.
+ *
+ * \tparam behavior Whether to keep or skip empty fields.
+ *
+ * \see split
+ * \since 5.1.23
+ */
+template <SplitBehavior behavior = SplitBehavior::SkipEmpty>
+constexpr auto splitView(std::string_view str, std::string_view delim) {
+    return details::SplitView<behavior == SplitBehavior::KeepEmpty>(str, delim);
+}
 
 /// \brief Replace all substring appearance of before with after.
 FCITXUTILS_EXPORT std::string replaceAll(std::string str,
@@ -104,14 +136,14 @@ FCITXUTILS_EXPORT size_t backwardSearch(const std::string &haystack,
                                         const std::string &needle, size_t from);
 
 /// \brief Join a range of string with delim.
-template <typename Iter, typename T>
-FCITXUTILS_EXPORT std::string join(Iter start, Iter end, T &&delim) {
+template <typename Iter, typename Sentinel, typename T>
+inline std::string join(Iter start, Sentinel end, T &&delim) {
     std::string result;
     if (start != end) {
         result += (*start);
-        start++;
+        ++start;
     }
-    for (; start != end; start++) {
+    for (; start != end; ++start) {
         result += (delim);
         result += (*start);
     }
@@ -158,11 +190,19 @@ constexpr bool literalEqual(char const *a, char const *b) {
     return *a == *b && (*a == '\0' || literalEqual(a + 1, b + 1));
 }
 
-/// \brief Inplace unescape a string contains slash, new line, optionally quote.
+/**
+ * \brief Inplace unescape a string contains slash, new line, optionally quote.
+ *
+ * \param str the string to unescape, will be modified.
+ * \param unescapeQuote whether to unescape quote.
+ */
 FCITXUTILS_EXPORT bool unescape(std::string &str, bool unescapeQuote);
 
 /**
- * \brief unescape a string, that is potentially quoted.
+ * \brief unescape a string if it is quoted, otherwise return the original
+ * string.
+ *
+ * Will return nullopt if the escape is invalid.
  *
  * \param str input string.
  * \return unescaped string
@@ -173,14 +213,49 @@ FCITXUTILS_EXPORT std::optional<std::string>
 unescapeForValue(std::string_view str);
 
 /**
- * \brief escape a string, add quote if needed.
+ * \brief escape a string if str contains certain characters.
+ *
+ * The characters include all FCITX_WHITESPACE, backslash, quote, space.
  *
  * \param str input string.
- * \return escaped string
+ * \return quoted escaped string, or the original string if no escape is needed.
  * \see unescapeForValue
  * \since 5.0.16
  */
 FCITXUTILS_EXPORT std::string escapeForValue(std::string_view str);
+
+/**
+ * Return a substring of input str if str starts with given prefix.
+ *
+ * \param str input string
+ * \param prefix to check
+ * \since 5.1.12
+ */
+FCITXUTILS_EXPORT bool consumePrefix(std::string_view &str,
+                                     std::string_view prefix);
+
+/**
+ * Consume a value that is potentially quoted and escaped. Useful for tokenize a
+ * line with multiple values.
+ *
+ * Logic is like:
+ * 1. skip leading character defined in skip.
+ * 2. if the first non-skip character is quote, consume until next unescaped
+ * quote. if the end is reached before finding the closing quote treat it as
+ * unquoted.
+ * 3. if the first non-skip character is not quote, consume until next skip
+ * character.
+ *
+ * \param input the string to consume from, will be updated to the remaining
+ * string after consuming.
+ * \param skip the characters to skip before and after the value.
+ * \param output the unescaped value, if not null.
+ * \return the consumed value range.
+ * \since 5.1.20
+ */
+FCITXUTILS_EXPORT std::string_view
+consumeMaybeEscapedValue(std::string_view &input, std::string_view skip,
+                         std::string *output);
 
 } // namespace fcitx::stringutils
 

@@ -5,66 +5,17 @@
  *
  */
 
-#include "fcitx-utils/library.h"
+#include "addonloader.h"
+#include <exception>
+#include <string>
 #include "fcitx-utils/log.h"
+#include "addonfactory.h"
+#include "addoninfo.h"
 #include "addonloader_p.h"
-#include "config.h"
 
 namespace fcitx {
 
 AddonLoader::~AddonLoader() {}
-
-SharedLibraryLoader::~SharedLibraryLoader() {}
-
-AddonInstance *SharedLibraryLoader::load(const AddonInfo &info,
-                                         AddonManager *manager) {
-    auto iter = registry_.find(info.uniqueName());
-    if (iter == registry_.end()) {
-        std::string libname = info.library();
-        Flags<LibraryLoadHint> flag = LibraryLoadHint::DefaultHint;
-        if (stringutils::startsWith(libname, "export:")) {
-            libname = libname.substr(7);
-            flag |= LibraryLoadHint::ExportExternalSymbolsHint;
-        }
-        auto file = libname + FCITX_LIBRARY_SUFFIX;
-        auto libs = standardPath_.locateAll(StandardPath::Type::Addon, file);
-        if (libs.empty()) {
-            FCITX_ERROR() << "Could not locate library " << file
-                          << " for addon " << info.uniqueName() << ".";
-        }
-        for (const auto &libraryPath : libs) {
-            Library lib(libraryPath);
-            if (!lib.load(flag)) {
-                FCITX_ERROR()
-                    << "Failed to load library for addon " << info.uniqueName()
-                    << " on " << libraryPath << ". Error: " << lib.error();
-                continue;
-            }
-            try {
-                registry_.emplace(
-                    info.uniqueName(),
-                    std::make_unique<SharedLibraryFactory>(std::move(lib)));
-            } catch (const std::exception &e) {
-            }
-            break;
-        }
-        iter = registry_.find(info.uniqueName());
-    }
-
-    if (iter == registry_.end()) {
-        return nullptr;
-    }
-
-    try {
-        return iter->second->factory()->create(manager);
-    } catch (const std::exception &e) {
-        FCITX_ERROR() << "Failed to create addon: " << info.uniqueName() << " "
-                      << e.what();
-    } catch (...) {
-        FCITX_ERROR() << "Failed to create addon: " << info.uniqueName();
-    }
-    return nullptr;
-}
 
 StaticLibraryLoader::StaticLibraryLoader(StaticAddonRegistry *registry_)
     : registry(registry_) {}

@@ -9,13 +9,29 @@
 
 #include <memory>
 #include <glib-object.h>
+#include <yoga/YGNode.h>
 #include "fcitx-utils/log.h"
+#include "fcitx-utils/misc.h"
 
-namespace fcitx {
-namespace classicui {
+namespace fcitx::classicui {
 
 template <typename T>
 using GObjectUniquePtr = UniqueCPtr<T, g_object_unref>;
+
+template <auto Getter>
+float absolute(YGNodeRef node) {
+    float offset = 0.0F;
+    while (node) {
+        offset += Getter(node);
+        node = YGNodeGetParent(node);
+    }
+    return offset;
+}
+
+template <auto Getter, typename T, typename Deleter>
+float absolute(const std::unique_ptr<T, Deleter> &node) {
+    return absolute<Getter>(node.get());
+}
 
 FCITX_DECLARE_LOG_CATEGORY(classicui_logcategory);
 #define CLASSICUI_DEBUG()                                                      \
@@ -25,7 +41,6 @@ FCITX_DECLARE_LOG_CATEGORY(classicui_logcategory);
 #define CLASSICUI_INFO()                                                       \
     FCITX_LOGC(::fcitx::classicui::classicui_logcategory, Info)
 
-} // namespace classicui
-} // namespace fcitx
+} // namespace fcitx::classicui
 
 #endif // _FCITX5_UI_CLASSIC_COMMON_H_

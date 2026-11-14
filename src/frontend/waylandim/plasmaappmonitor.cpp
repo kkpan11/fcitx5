@@ -5,7 +5,14 @@
  *
  */
 #include "plasmaappmonitor.h"
+#include <cstdint>
+#include <list>
+#include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
+#include "fcitx-utils/signals.h"
+#include "display.h"
 #include "plasma-window-management/org_kde_plasma_window.h"
 #include "plasma-window-management/org_kde_plasma_window_management.h"
 
@@ -42,7 +49,8 @@ private:
 };
 
 PlasmaAppMonitor::PlasmaAppMonitor(wayland::Display *display) {
-    display->requestGlobals<wayland::OrgKdePlasmaWindowManagement>();
+    display->requestGlobalsWithMinimalVersion<
+        wayland::OrgKdePlasmaWindowManagement>(17);
 
     globalConn_ = display->globalCreated().connect(
         [this](const std::string &name,

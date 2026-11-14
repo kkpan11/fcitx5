@@ -6,6 +6,11 @@
  */
 
 #include "inputpanel.h"
+#include <memory>
+#include <utility>
+#include "fcitx-utils/macros.h"
+#include "candidatelist.h"
+#include "text.h"
 
 namespace fcitx {
 
@@ -15,6 +20,7 @@ public:
     Text auxUp_;
     Text preedit_;
     Text clientPreedit_;
+    Text overlayMessage_;
     std::shared_ptr<CandidateList> candidate_;
     InputContext *ic_;
     CustomInputPanelCallback customCallback_ = nullptr;
@@ -79,6 +85,16 @@ const Text &InputPanel::preedit() const {
     return d->preedit_;
 }
 
+const Text &InputPanel::overlayMessage() const {
+    FCITX_D();
+    return d->overlayMessage_;
+}
+
+void InputPanel::setOverlayMessage(Text text) {
+    FCITX_D();
+    d->overlayMessage_ = std::move(text);
+}
+
 const CustomInputPanelCallback &InputPanel::customInputPanelCallback() const {
     FCITX_D();
     return d->customCallback_;
@@ -110,6 +126,7 @@ void InputPanel::reset() {
     d->candidate_.reset();
     d->auxUp_.clear();
     d->auxDown_.clear();
+    d->overlayMessage_.clear();
     d->customCallback_ = nullptr;
     d->customVirtualKeyboardCallback_ = nullptr;
 }

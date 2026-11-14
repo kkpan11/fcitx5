@@ -8,7 +8,13 @@
 #define _FCITX_UI_CLASSIC_WAYLANDWINDOW_H_
 
 #include <cstdint>
+#include <memory>
+#include <wayland-client-protocol.h>
+#include <wayland-util.h>
+#include "fcitx-utils/eventloopinterface.h"
 #include "fcitx-utils/rect.h"
+#include "fcitx-utils/signals.h"
+#include "fcitx-utils/trackableobject.h"
 #include "waylandui.h"
 #include "window.h"
 #include "wp_fractional_scale_manager_v1.h"
@@ -16,13 +22,12 @@
 #include "wp_viewport.h"
 #include "wp_viewporter.h"
 
-namespace fcitx {
-namespace classicui {
+namespace fcitx::classicui {
 
 class WaylandWindow : public Window, public TrackableObject<WaylandWindow> {
 public:
-    static inline constexpr unsigned int ScaleDominator = 120;
-    static inline constexpr double ScaleDominatorF = ScaleDominator;
+    static constexpr unsigned int ScaleDominator = 120;
+    static constexpr double ScaleDominatorF = ScaleDominator;
     WaylandWindow(WaylandUI *ui);
     ~WaylandWindow();
 
@@ -95,7 +100,6 @@ private:
     void scheduleRepaint();
 };
 
-} // namespace classicui
-} // namespace fcitx
+} // namespace fcitx::classicui
 
 #endif // _FCITX_UI_CLASSIC_WAYLANDWINDOW_H_

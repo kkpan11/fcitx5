@@ -10,10 +10,10 @@
 #include <memory>
 #include <fcitx-utils/macros.h>
 #include <fcitx/addonmanager.h>
+#include <fcitx/fcitxcore_export.h>
 #include <fcitx/inputpanel.h>
 #include <fcitx/statusarea.h>
 #include <fcitx/userinterface.h>
-#include "fcitxcore_export.h"
 
 /// \addtogroup FcitxCore
 /// \{
@@ -87,7 +87,7 @@ public:
     void expire(InputContext *inputContext);
     void flush();
     /**
-     * Invoke by user interface addon to notify if there is any avaiability
+     * Invoke by user interface addon to notify if there is any availability
      * change.
      */
     void updateAvailability();

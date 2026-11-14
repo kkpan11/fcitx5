@@ -11,15 +11,18 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
-#include "fcitx-utils/event.h"
-#include "fcitx-utils/handlertable.h"
-#include "fcitx-utils/misc.h"
-#include "fcitx-utils/trackableobject.h"
+#include <fcitx-utils/event.h>
+#include <fcitx-utils/eventdispatcher.h>
+#include <fcitx-utils/handlertable.h>
+#include <fcitx-utils/misc.h>
+#include <fcitx-utils/trackableobject.h>
+#include <fcitx/inputcontextproperty.h>
+#include <fcitx/inputmethodmanager.h>
+#include <fcitx/instance.h>
+#include <fcitx/tempmodemanager.h>
+#include <fcitx/userinterfacemanager.h>
+#include "fcitx-utils/connectableobject.h"
 #include "config.h"
-#include "inputcontextproperty.h"
-#include "inputmethodmanager.h"
-#include "instance.h"
-#include "userinterfacemanager.h"
 
 #ifdef ENABLE_KEYBOARD
 #include <xkbcommon/xkbcommon-compose.h>
@@ -55,6 +58,7 @@ struct InputState : public InputContextProperty {
     CheckInputMethodChanged *imChanged_ = nullptr;
     int keyReleased_ = -1;
     Key lastKeyPressed_;
+    uint64_t lastKeyPressedTime_ = 0;
     bool totallyReleased_ = true;
     bool firstTrigger_ = false;
     size_t pendingGroupIndex_ = 0;
@@ -161,13 +165,16 @@ public:
                                            : InputMethodMode::PhysicalKeyboard;
 
     EventLoop eventLoop_;
+    EventDispatcher eventDispatcher_;
     std::unique_ptr<EventSourceIO> signalPipeEvent_;
     std::unique_ptr<EventSourceTime> preloadInputMethodEvent_;
+    std::unique_ptr<EventSourceTime> zombieReaper_;
     std::unique_ptr<EventSource> exitEvent_;
     InputContextManager icManager_;
     AddonManager addonManager_;
     InputMethodManager imManager_{&this->addonManager_};
     UserInterfaceManager uiManager_{&this->addonManager_};
+    std::unique_ptr<TempModeManager> tempModeManager_;
     GlobalConfig globalConfig_;
     std::unordered_map<EventType,
                        std::unordered_map<EventWatcherPhase,
@@ -185,6 +192,9 @@ public:
     FCITX_DEFINE_SIGNAL_PRIVATE(Instance, OutputFilter);
     FCITX_DEFINE_SIGNAL_PRIVATE(Instance, KeyEventResult);
     FCITX_DEFINE_SIGNAL_PRIVATE(Instance, CheckUpdate);
+    FCITX_DEFINE_SIGNAL_PRIVATE(Instance, XkbStateMaskChanged);
+    FCITX_DEFINE_SIGNAL_PRIVATE(Instance, AboutToExit);
+    FCITX_DEFINE_SIGNAL_PRIVATE(Instance, Exit);
 
     FactoryFor<InputState> inputStateFactory_{
         [this](InputContext &ic) { return new InputState(this, &ic); }};

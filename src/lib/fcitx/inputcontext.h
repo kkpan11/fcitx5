@@ -9,17 +9,22 @@
 #define _FCITX_INPUTCONTEXT_H_
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <fcitx-utils/capabilityflags.h>
+#include <fcitx-utils/key.h>
 #include <fcitx-utils/macros.h>
 #include <fcitx-utils/rect.h>
 #include <fcitx-utils/trackableobject.h>
 #include <fcitx/event.h>
+#include <fcitx/fcitxcore_export.h>
 #include <fcitx/inputcontextproperty.h>
 #include <fcitx/surroundingtext.h>
-#include "fcitxcore_export.h"
+#include <fcitx/userinterface.h>
 
 /// \addtogroup FcitxCore
 /// \{
@@ -35,7 +40,7 @@ class InputContextPrivate;
 class InputContextProperty;
 class InputPanel;
 class StatusArea;
-typedef std::function<bool(InputContext *ic)> InputContextVisitor;
+using InputContextVisitor = std::function<bool(InputContext *ic)>;
 
 /**
  * An input context represents a client of Fcitx. It can be a Window, or a text
@@ -200,6 +205,16 @@ public:
     void updatePreedit();
 
     /**
+     * Notifies client about changes in clientPreedit
+     *
+     * @param forceUpdate force update even if preedit's emptiness is not
+     * changed.
+     * @see InputPanel::clientPreedit
+     * @since 5.1.23
+     */
+    void updatePreedit(bool forceUpdate);
+
+    /**
      * Notifies UI about changes in user interface.
      *
      * @param component The components of UI that need to be updated.
@@ -314,7 +329,7 @@ public:
 
     bool clientControlVirtualkeyboardHide() const;
 
-    void setClientControlVirtualkeyboardHide(bool show);
+    void setClientControlVirtualkeyboardHide(bool hide);
 
 protected:
     /**

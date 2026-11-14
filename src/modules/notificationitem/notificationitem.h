@@ -7,12 +7,18 @@
 #ifndef _FCITX_MODULES_NOTIFICATIONITEM_NOTIFICATIONITEM_H_
 #define _FCITX_MODULES_NOTIFICATIONITEM_NOTIFICATIONITEM_H_
 
+#include <cstdint>
 #include <memory>
-#include <fcitx/addonmanager.h>
+#include <string>
+#include <vector>
+#include "fcitx-utils/dbus/bus.h"
 #include "fcitx-utils/dbus/servicewatcher.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/handlertable.h"
+#include "fcitx-utils/trackableobject.h"
 #include "fcitx/addoninstance.h"
+#include "fcitx/addonmanager.h"
 #include "fcitx/instance.h"
-#include "dbus_public.h"
 #include "notificationitem_public.h"
 
 namespace fcitx {
@@ -36,8 +42,8 @@ public:
     bool registered() const { return registered_; }
     std::unique_ptr<HandlerTableEntry<NotificationItemCallback>>
     watch(NotificationItemCallback callback);
-    void newIcon();
     FCITX_ADDON_DEPENDENCY_LOADER(classicui, instance_->addonManager());
+    FCITX_ADDON_DEPENDENCY_LOADER(imselector, instance_->addonManager());
     DBusMenu *menu() { return menu_.get(); }
 
 private:
@@ -49,6 +55,8 @@ private:
 
     void maybeScheduleRegister();
     void cleanUp();
+    void newIcon();
+    void newToolTip();
 
     Instance *instance_;
     std::unique_ptr<dbus::ServiceWatcher> watcher_;
@@ -60,10 +68,11 @@ private:
         eventHandlers_;
     std::unique_ptr<dbus::Slot> pendingRegisterCall_;
     std::string sniWatcherName_;
-    bool enabled_ = false;
+    uint32_t enabled_ = 0;
     bool registered_ = false;
     std::unique_ptr<EventSourceTime> scheduleRegister_;
     HandlerTable<NotificationItemCallback> handlers_;
+    TrackableObject<void> lifeTimeTracker_;
 };
 
 } // namespace fcitx

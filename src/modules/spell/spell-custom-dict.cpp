@@ -9,12 +9,21 @@
 #include "spell-custom-dict.h"
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+#include <format>
 #include "fcitx-utils/cutf8.h"
 #include "fcitx-utils/endian_p.h"
 #include "fcitx-utils/fs.h"
-#include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/standardpaths.h"
+#include "fcitx-utils/stringutils.h"
 
 #define case_a_z                                                               \
     case 'a':                                                                  \
@@ -74,11 +83,15 @@
 
 #define DICT_BIN_MAGIC "FSCD0000"
 
+namespace fcitx {
+
+namespace {
+
 bool checkLang(const std::string &full_lang, const std::string &lang) {
     if (full_lang.empty() || lang.empty()) {
         return false;
     }
-    if (full_lang.compare(0, lang.size(), lang) != 0) {
+    if (!full_lang.starts_with(lang)) {
         return false;
     }
     switch (full_lang[lang.size()]) {
@@ -91,11 +104,9 @@ bool checkLang(const std::string &full_lang, const std::string &lang) {
     return false;
 }
 
-static inline uint32_t load_le32(const void *p) {
-    return le32toh(*(uint32_t *)p);
-}
+inline uint32_t load_le32(const void *p) { return le32toh(*(uint32_t *)p); }
 
-static bool isFirstCapital(const std::string &str) {
+bool isFirstCapital(const std::string &str) {
     if (str.empty()) {
         return false;
     }
@@ -118,12 +129,12 @@ static bool isFirstCapital(const std::string &str) {
     return true;
 }
 
-static bool isAllCapital(const std::string &str) {
+bool isAllCapital(const std::string &str) {
     if (str.empty()) {
         return false;
     }
-    for (auto iter = str.begin(); iter != str.end(); iter++) {
-        switch (*iter) {
+    for (char iter : str) {
+        switch (iter) {
         case_a_z:
             return false;
         default:
@@ -139,14 +150,14 @@ enum {
     CUSTOM_ALL_CAPITAL,
 };
 
-static void toUpperString(std::string &str) {
+void toUpperString(std::string &str) {
     if (str.empty()) {
         return;
     }
-    for (auto iter = str.begin(); iter != str.end(); iter++) {
-        switch (*iter) {
+    for (char &iter : str) {
+        switch (iter) {
         case_a_z:
-            *iter += 'A' - 'a';
+            iter += 'A' - 'a';
             break;
         default:
             break;
@@ -154,7 +165,7 @@ static void toUpperString(std::string &str) {
     }
 }
 
-namespace fcitx {
+} // namespace
 
 class SpellCustomDictEn : public SpellCustomDict {
 public:
@@ -176,6 +187,8 @@ public:
         switch (c2) {
         case_A_Z:
             c2 += 'a' - 'A';
+            break;
+        default:
             break;
         }
         return c1 == c2;
@@ -216,40 +229,10 @@ public:
     }
 };
 
-#if 0
-static inline uint16_t
-load_le16(const void* p)
-{
-    return le16toh(*(uint16_t*)p);
-}
-#endif
-
-/**
-// Open the dict file, return -1 if failed.
- **/
-std::string SpellCustomDict::locateDictFile(const std::string &lang) {
-    auto templatePath = "spell/" + lang + "_dict.fscd";
-    const auto &standardPath = StandardPath::global();
-    std::string path;
-    standardPath.scanDirectories(
-        StandardPath::Type::PkgData,
-        [&path, &templatePath](const std::string &dirPath, bool isUser) {
-            if (isUser) {
-                return true;
-            }
-            auto fullPath = stringutils::joinPath(dirPath, templatePath);
-            if (fs::isreg(fullPath)) {
-                path = std::move(fullPath);
-                return false;
-            }
-            return true;
-        });
-    return path;
-}
-
 void SpellCustomDict::loadDict(const std::string &lang) {
-    auto file = locateDictFile(lang);
-    auto fd = UnixFD::own(open(file.c_str(), O_RDONLY));
+    auto fd = StandardPaths::global().open(
+        StandardPathsType::PkgData, std::format("spell/{}_dict.fscd", lang),
+        StandardPathsMode::System);
 
     if (!fd.isValid()) {
         throw std::runtime_error("failed to open dict file");
@@ -310,7 +293,11 @@ SpellCustomDict *SpellCustomDict::requestDict(const std::string &lang) {
 }
 
 bool SpellCustomDict::checkDict(const std::string &lang) {
-    return !locateDictFile(lang).empty();
+    return !StandardPaths::global()
+                .locate(StandardPathsType::PkgData,
+                        std::format("spell/{}_dict.fscd", lang),
+                        StandardPathsMode::System)
+                .empty();
 }
 
 int SpellCustomDict::getDistance(const char *word, int utf8Len,
@@ -327,7 +314,7 @@ int SpellCustomDict::getDistance(const char *word, int utf8Len,
      *
      * each error need to follow a correct match.
      *
-     * number of "remove error" shoud be no more than "maxremove"
+     * number of "remove error" should be no more than "maxremove"
      * while maxremove equals to (length - 2) / 3
      *
      * and the total error number should be no more than "maxdiff"
@@ -442,20 +429,19 @@ SpellCustomDict::hint(const std::string &str, size_t limit) {
         return lhs.second < rhs.second;
     };
     for (const auto &wordOffset : words_) {
-        int dist;
         const char *dictWord = data_.data() + wordOffset;
-        if ((dist = getDistance(real_word, word_len, dictWord)) >= 0) {
+        if (int dist = getDistance(real_word, word_len, dictWord); dist >= 0) {
             tops.emplace_back(dictWord, dist);
-            std::push_heap(tops.begin(), tops.end(), compare);
+            std::ranges::push_heap(tops, compare);
             if (tops.size() > limit) {
-                std::pop_heap(tops.begin(), tops.end(), compare);
+                std::ranges::pop_heap(tops, compare);
                 tops.pop_back();
             }
         }
     }
 
     // Or sort heap?..
-    std::sort(tops.begin(), tops.end(), compare);
+    std::ranges::sort(tops, compare);
 
     result.reserve(tops.size());
     for (auto &top : tops) {

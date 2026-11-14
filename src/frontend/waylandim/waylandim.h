@@ -7,14 +7,22 @@
 #ifndef _FCITX_FRONTEND_WAYLANDIM_WAYLANDIM_H_
 #define _FCITX_FRONTEND_WAYLANDIM_WAYLANDIM_H_
 
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
-#include <fcitx-config/iniparser.h>
-#include <fcitx-utils/i18n.h>
-#include <fcitx/addonfactory.h>
-#include <fcitx/addoninstance.h>
-#include <fcitx/addonmanager.h>
-#include <fcitx/instance.h>
+#include <wayland-client-core.h>
+#include <wayland-client.h>
+#include "fcitx-config/configuration.h"
+#include "fcitx-config/iniparser.h"
+#include "fcitx-config/option.h"
+#include "fcitx-config/rawconfig.h"
+#include "fcitx-utils/handlertable.h"
+#include "fcitx-utils/i18n.h"
+#include "fcitx-utils/log.h"
+#include "fcitx/addoninstance.h"
+#include "fcitx/addonmanager.h"
+#include "fcitx/instance.h"
 #include "appmonitor.h"
 #include "wayland_public.h"
 #include "waylandim_public.h"
@@ -28,10 +36,21 @@ FCITX_CONFIGURATION(
         _("Detect current running application (Need restart)"), true};
     Option<bool> preferKeyEvent{
         this, "PreferKeyEvent",
-        _("Forward key event instead of commiting text if it is not handled"),
-        true};);
+        _("Forward key event instead of committing text if it is not handled"),
+        true};
+    OptionWithAnnotation<bool, ToolTipAnnotation> persistentVirtualKeyboard{
+        this,
+        "PersistentVirtualKeyboard",
+        _("Keep virtual keyboard object for V2 Protocol (Need restart)"),
+        false,
+        {},
+        {},
+        {_("If enabled, when using zwp_input_method_v2, do not create and "
+           "destroy zwp_virtual_keyboard_v1 on activate and deactivate. This "
+           "may workaround some bug in certain Compositor, including "
+           "Sway<=1.9, RiverWM<=0.3.0.")}};);
 
-constexpr int32_t repeatHackDelay = 1000;
+constexpr int32_t repeatHackDelay = 3000;
 class WaylandIMServer;
 class WaylandIMServerV2;
 
@@ -41,6 +60,7 @@ public:
     ~WaylandIMModule();
 
     FCITX_ADDON_DEPENDENCY_LOADER(wayland, instance_->addonManager());
+    FCITX_ADDON_DEPENDENCY_LOADER(dbus, instance_->addonManager());
     Instance *instance() { return instance_; }
 
     wayland::ZwpInputMethodV2 *getInputMethodV2(InputContext *ic);
@@ -60,6 +80,10 @@ public:
 
     AggregatedAppMonitor *appMonitor(const std::string &display);
 
+    bool persistentVirtualKeyboard() const {
+        return persistentVirtualKeyboard_;
+    }
+
 private:
     Instance *instance_;
     WaylandIMConfig config_;
@@ -72,6 +96,7 @@ private:
     std::unique_ptr<HandlerTableEntry<WaylandConnectionCreated>>
         createdCallback_;
     std::unique_ptr<HandlerTableEntry<WaylandConnectionClosed>> closedCallback_;
+    bool persistentVirtualKeyboard_ = false;
 };
 } // namespace fcitx
 

@@ -6,29 +6,37 @@
  */
 #include "quickphraseprovider.h"
 #include <fcntl.h>
-#include <fcitx-utils/utf8.h>
-#include <fcitx/inputmethodentry.h>
+#include <cstddef>
+#include <istream>
+#include <string>
+#include <string_view>
+#include <utility>
+#include "fcitx-utils/fdstreambuf.h"
 #include "fcitx-utils/fs.h"
-#include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/macros.h"
+#include "fcitx-utils/misc.h"
+#include "fcitx-utils/standardpaths.h"
 #include "fcitx-utils/stringutils.h"
+#include "fcitx-utils/utf8.h"
+#include "fcitx/inputcontext.h"
+#include "fcitx/inputmethodentry.h"
 #include "quickphrase.h"
+#include "quickphrase_public.h"
 #include "spell_public.h"
 
 namespace fcitx {
 
 bool BuiltInQuickPhraseProvider::populate(
     InputContext *, const std::string &userInput,
-    const QuickPhraseAddCandidateCallback &addCandidate) {
+    const QuickPhraseAddCandidateCallbackV2 &addCandidate) {
     auto start = map_.lower_bound(userInput);
     auto end = map_.end();
 
     for (; start != end; start++) {
-        if (!stringutils::startsWith(start->first, userInput)) {
+        if (!start->first.starts_with(userInput)) {
             break;
         }
-        addCandidate(start->second,
-                     stringutils::concat(start->second, " ",
-                                         start->first.substr(userInput.size())),
+        addCandidate(start->second, start->second, start->first,
                      QuickPhraseAction::Commit);
     }
     return true;
@@ -36,36 +44,38 @@ bool BuiltInQuickPhraseProvider::populate(
 void BuiltInQuickPhraseProvider::reloadConfig() {
 
     map_.clear();
-    auto file = StandardPath::global().open(StandardPath::Type::PkgData,
-                                            "data/QuickPhrase.mb", O_RDONLY);
-    auto files = StandardPath::global().multiOpen(
-        StandardPath::Type::PkgData, "data/quickphrase.d/", O_RDONLY,
-        filter::Suffix(".mb"));
-    auto disableFiles = StandardPath::global().multiOpen(
-        StandardPath::Type::PkgData, "data/quickphrase.d/", O_RDONLY,
-        filter::Suffix(".mb.disable"));
-    if (file.fd() >= 0) {
-        load(file);
+    if (auto file = StandardPaths::global().open(StandardPathsType::PkgData,
+                                                 "data/QuickPhrase.mb");
+        file.isValid()) {
+        load(file.fd());
     }
 
-    for (auto &p : files) {
-        if (disableFiles.count(stringutils::concat(p.first, ".disable"))) {
+    auto files = StandardPaths::global().locate(StandardPathsType::PkgData,
+                                                "data/quickphrase.d/",
+                                                pathfilter::extension(".mb"));
+    auto disableFiles = StandardPaths::global().locate(
+        StandardPathsType::PkgData, "data/quickphrase.d/",
+        pathfilter::extension(".disable"));
+    for (const auto &p : files) {
+        auto path = p.first;
+        // std::filesystem::path can only do +=.
+        path += ".disable";
+        if (disableFiles.contains(path)) {
             continue;
         }
-        load(p.second);
+        UnixFD fd = StandardPaths::openPath(p.second);
+        if (fd.isValid()) {
+            load(fd.fd());
+        }
     }
 }
 
-void BuiltInQuickPhraseProvider::load(StandardPathFile &file) {
-    UniqueFilePtr fp = fs::openFD(file, "rb");
-    if (!fp) {
-        return;
-    }
-
-    UniqueCPtr<char> buf;
-    size_t len = 0;
-    while (getline(buf, &len, fp.get()) != -1) {
-        std::string_view text = stringutils::trimView(buf.get());
+void BuiltInQuickPhraseProvider::load(int fd) {
+    IFDStreamBuf buf(fd);
+    std::istream in(&buf);
+    std::string line;
+    while (std::getline(in, line)) {
+        std::string_view text = stringutils::trimView(line);
         if (text.empty()) {
             continue;
         }
@@ -93,40 +103,56 @@ void BuiltInQuickPhraseProvider::load(StandardPathFile &file) {
     }
 }
 
-SpellQuickPhraseProvider::SpellQuickPhraseProvider(QuickPhrase *quickPhrase)
-    : parent_(quickPhrase), instance_(parent_->instance()) {}
+SpellQuickPhraseProvider::SpellQuickPhraseProvider(QuickPhrase *parent)
+    : parent_(parent), instance_(parent_->instance()) {}
 
 bool SpellQuickPhraseProvider::populate(
     InputContext *ic, const std::string &userInput,
-    const QuickPhraseAddCandidateCallback &addCandidate) {
+    const QuickPhraseAddCandidateCallbackV2 &addCandidate) {
     if (!*parent_->config().enableSpell) {
         return true;
     }
-    auto spell = this->spell();
+    auto *spell = this->spell();
     if (!spell) {
         return true;
     }
     std::string lang = *parent_->config().fallbackSpellLanguage;
-    if (auto entry = instance_->inputMethodEntry(ic)) {
+    if (const auto *entry = instance_->inputMethodEntry(ic)) {
         if (spell->call<ISpell::checkDict>(entry->languageCode())) {
             lang = entry->languageCode();
         } else if (!spell->call<ISpell::checkDict>(lang)) {
             return true;
         }
     }
+
+    // Do not give spell hint if input contains url like character.
+    if (userInput.find_first_of(".@/+%") != std::string::npos) {
+        return true;
+    }
+
     const auto result = spell->call<ISpell::hint>(
         lang, userInput, instance_->globalConfig().defaultPageSize());
     for (const auto &word : result) {
-        addCandidate(word, word, QuickPhraseAction::Commit);
+        addCandidate(word, word, "", QuickPhraseAction::Commit);
     }
     return true;
 }
 
 bool CallbackQuickPhraseProvider::populate(
     InputContext *ic, const std::string &userInput,
-    const QuickPhraseAddCandidateCallback &addCandidate) {
-    for (const auto &callback : callback_.view()) {
+    const QuickPhraseAddCandidateCallbackV2 &addCandidate) {
+    for (const auto &callback : callbackV2_.view()) {
         if (!callback(ic, userInput, addCandidate)) {
+            return false;
+        }
+    }
+    for (const auto &callback : callback_.view()) {
+        if (!callback(ic, userInput,
+                      [&addCandidate](const std::string &word,
+                                      const std::string &aux,
+                                      QuickPhraseAction action) {
+                          return addCandidate(word, aux, "", action);
+                      })) {
             return false;
         }
     }

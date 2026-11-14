@@ -6,9 +6,19 @@
  */
 
 #include "semver.h"
+#include <algorithm>
 #include <charconv>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <optional>
 #include <string>
-#include <fmt/format.h>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <variant>
+#include <vector>
+#include <format>
 #include "charutils.h"
 #include "misc.h"
 #include "stringutils.h"
@@ -23,8 +33,8 @@ bool isIdChar(char c) {
 }
 
 std::optional<uint32_t> consumeNumericIdentifier(std::string_view &str) {
-    const auto *endOfNum =
-        std::find_if_not(str.begin(), str.end(), charutils::isdigit);
+    std::string_view::iterator endOfNum =
+        std::ranges::find_if_not(str, charutils::isdigit);
     auto length = std::distance(str.begin(), endOfNum);
     if (length == 0) {
         return std::nullopt;
@@ -35,8 +45,8 @@ std::optional<uint32_t> consumeNumericIdentifier(std::string_view &str) {
 
     auto numberStr = str.substr(0, length);
     uint32_t number;
-    if (auto [p, ec] =
-            std::from_chars(numberStr.begin(), numberStr.end(), number);
+    if (auto [p, ec] = std::from_chars(
+            numberStr.data(), numberStr.data() + numberStr.size(), number);
         ec == std::errc()) {
         str.remove_prefix(length);
         return number;
@@ -48,7 +58,7 @@ std::optional<std::vector<PreReleaseId>>
 consumePrereleaseIds(std::string_view &data) {
     std::vector<PreReleaseId> preReleaseIds;
     std::string_view::const_iterator endOfVersion =
-        std::find_if_not(data.begin(), data.end(), isIdChar);
+        std::ranges::find_if_not(data, isIdChar);
     auto length = std::distance(data.begin(), endOfVersion);
     auto idString = data.substr(0, length);
     auto ids = stringutils::split(idString, ".",
@@ -59,7 +69,7 @@ consumePrereleaseIds(std::string_view &data) {
         }
         // If it's numeric, it need to be a valid numeric.
         // Otherwise it can be anything.
-        if (std::all_of(id.begin(), id.end(), charutils::isdigit)) {
+        if (std::ranges::all_of(id, charutils::isdigit)) {
             std::string_view idView(id);
             auto result = consumeNumericIdentifier(idView);
             if (result && idView.empty()) {
@@ -76,11 +86,11 @@ consumePrereleaseIds(std::string_view &data) {
 }
 
 std::optional<std::vector<std::string>> consumeBuild(std::string_view &data) {
-    if (std::all_of(data.begin(), data.end(), isIdChar)) {
+    if (std::ranges::all_of(data, isIdChar)) {
         auto ids = stringutils::split(data, ".",
                                       stringutils::SplitBehavior::KeepEmpty);
-        if (std::any_of(ids.begin(), ids.end(),
-                        [](const auto &id) { return id.empty(); })) {
+        if (std::ranges::any_of(ids,
+                                [](const auto &id) { return id.empty(); })) {
             return std::nullopt;
         }
         data.remove_prefix(data.size());
@@ -150,7 +160,7 @@ void SemanticVersion::setMinor(uint32_t minor) { minor_ = minor; }
 void SemanticVersion::setPatch(uint32_t patch) { patch_ = patch; }
 
 std::string SemanticVersion::toString() const {
-    std::string result = fmt::format("{0}.{1}.{2}", major_, minor_, patch_);
+    std::string result = std::format("{0}.{1}.{2}", major_, minor_, patch_);
     if (!preReleaseIds_.empty()) {
         result.append("-");
         result.append(preReleaseIds_.front().toString());

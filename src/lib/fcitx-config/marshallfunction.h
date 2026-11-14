@@ -7,11 +7,16 @@
 #ifndef _FCITX_CONFIG_INTOPTION_H_
 #define _FCITX_CONFIG_INTOPTION_H_
 
+#include <cstddef>
+#include <optional>
+#include <string>
 #include <vector>
+#include <fcitx-config/fcitxconfig_export.h>
+#include <fcitx-config/rawconfig.h>
 #include <fcitx-utils/color.h>
 #include <fcitx-utils/i18nstring.h>
+#include <fcitx-utils/key.h>
 #include <fcitx-utils/semver.h>
-#include "rawconfig.h"
 
 namespace fcitx {
 
@@ -81,6 +86,26 @@ bool unmarshallOption(std::vector<T> &value, const RawConfig &config,
     }
     return true;
 }
+
+template <typename T>
+void marshallOption(RawConfig &config, const std::optional<T> &value) {
+    config.removeAll();
+    if (value) {
+        marshallOption(config["Value"], *value);
+    }
+}
+
+template <typename T>
+bool unmarshallOption(std::optional<T> &value, const RawConfig &config,
+                      bool partial) {
+    if (auto valueConfig = config.get("Value")) {
+        value.emplace();
+        return unmarshallOption(*value, *valueConfig, partial);
+    }
+    value.reset();
+    return true;
+}
+
 } // namespace fcitx
 
 #endif // _FCITX_CONFIG_INTOPTION_H_

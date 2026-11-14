@@ -7,14 +7,26 @@
 #ifndef _FCITX_MODULES_WAYLAND_WAYLANDMODULE_H_
 #define _FCITX_MODULES_WAYLAND_WAYLANDMODULE_H_
 
+#include <unistd.h>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <tuple>
+#include <unordered_map>
+#include <vector>
+#include <wayland-client-protocol.h>
+#include "fcitx-config/configuration.h"
 #include "fcitx-config/iniparser.h"
-#include "fcitx-utils/event.h"
+#include "fcitx-config/option.h"
+#include "fcitx-config/rawconfig.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/handlertable.h"
 #include "fcitx-utils/i18n.h"
 #include "fcitx-utils/log.h"
-#include "fcitx/addonfactory.h"
+#include "fcitx-utils/signals.h"
+#include "fcitx-utils/trackableobject.h"
+#include "fcitx-utils/unixfd.h"
 #include "fcitx/addoninstance.h"
 #include "fcitx/addonmanager.h"
 #include "fcitx/instance.h"
@@ -28,11 +40,12 @@ namespace fcitx {
 class WaylandModule;
 class WaylandEventReader;
 
-FCITX_CONFIGURATION(
-    WaylandConfig,
-    Option<bool> allowOverrideXKB{
-        this, "Allow Overriding System XKB Settings",
-        _("Allow Overriding System XKB Settings (Only support KDE 5)"), true};);
+FCITX_CONFIGURATION(WaylandConfig,
+                    Option<bool> allowOverrideXKB{
+                        this, "Allow Overriding System XKB Settings",
+                        _("Allow Overriding System XKB Settings (Only support "
+                          "KDE5+ and GNOME)"),
+                        true};);
 
 class WaylandKeyboard {
 public:
@@ -49,22 +62,30 @@ public:
 
     auto &updateKeymap() { return updateKeymap_; }
 
+    const std::optional<std::tuple<int32_t, int32_t>> &repeatInfo() const {
+        return repeatInfo_;
+    }
+
 private:
     void init() {
         keyboard_->keymap().connect([this](uint32_t, int32_t fd, uint32_t) {
             close(fd);
             updateKeymap_();
         });
+        keyboard_->repeatInfo().connect([this](int32_t rate, int32_t delay) {
+            repeatInfo_ = std::make_tuple(rate, delay);
+        });
     }
     ScopedConnection capConn_;
     std::unique_ptr<wayland::WlKeyboard> keyboard_;
     Signal<void()> updateKeymap_;
+    std::optional<std::tuple<int32_t, int32_t>> repeatInfo_;
 };
 
-class WaylandConnection {
+class WaylandConnection : public TrackableObject<WaylandConnection> {
 public:
     WaylandConnection(WaylandModule *wayland, std::string name);
-    WaylandConnection(WaylandModule *wayland, std::string name, int fd,
+    WaylandConnection(WaylandModule *wayland, std::string name, UnixFD fd,
                       std::string realName);
     ~WaylandConnection();
 
@@ -77,6 +98,9 @@ public:
     auto *parent() const { return parent_; }
 
     bool isWaylandSocket() const { return isWaylandSocket_; }
+
+    std::optional<std::tuple<int32_t, int32_t>>
+    repeatInfo(wayland::WlSeat *seat) const;
 
 private:
     void init(wl_display *display);
@@ -103,10 +127,11 @@ public:
 
     bool openConnection(const std::string &name);
     bool openConnectionSocket(int fd);
-    bool openConnectionSocketWithName(int fd, const std::string &name,
-                                      const std::string &realName);
     bool reopenConnectionSocket(const std::string &name, int fd);
     void removeConnection(const std::string &name);
+
+    bool openConnectionSocketV2(UnixFD fd);
+    bool reopenConnectionSocketV2(const std::string &name, UnixFD fd);
 
     std::unique_ptr<HandlerTableEntry<WaylandConnectionCreated>>
     addConnectionCreatedCallback(WaylandConnectionCreated callback);
@@ -123,13 +148,22 @@ public:
 
     void selfDiagnose();
 
+    std::optional<std::tuple<int32_t, int32_t>>
+    repeatInfo(const std::string &name, wl_seat *seat) const;
+
+    void setLayoutToCompositor();
+
 private:
+    bool openConnectionSocketWithName(UnixFD fd, const std::string &name,
+                                      const std::string &realName);
     void onConnectionCreated(WaylandConnection &conn);
     void onConnectionClosed(WaylandConnection &conn);
     void refreshCanRestart();
     void reloadXkbOptionReal();
     void setLayoutToGNOME();
-    void setLayoutToKDE5();
+    void setLayoutToKDE();
+
+    bool hasWaylandInputMethod() const;
 
     FCITX_ADDON_DEPENDENCY_LOADER(dbus, instance_->addonManager());
     FCITX_ADDON_DEPENDENCY_LOADER(xcb, instance_->addonManager());
@@ -147,11 +181,15 @@ private:
     FCITX_ADDON_EXPORT_FUNCTION(WaylandModule, openConnection);
     FCITX_ADDON_EXPORT_FUNCTION(WaylandModule, openConnectionSocket);
     FCITX_ADDON_EXPORT_FUNCTION(WaylandModule, reopenConnectionSocket);
+    FCITX_ADDON_EXPORT_FUNCTION(WaylandModule, repeatInfo);
+    FCITX_ADDON_EXPORT_FUNCTION(WaylandModule, openConnectionSocketV2);
+    FCITX_ADDON_EXPORT_FUNCTION(WaylandModule, reopenConnectionSocketV2);
 
     std::vector<std::unique_ptr<HandlerTableEntry<EventHandler>>>
         eventHandlers_;
     std::unique_ptr<EventSourceTime> delayedReloadXkbOption_;
     std::unique_ptr<EventSourceTime> deferredDiagnose_;
+    ScopedConnection exitConnection_;
 };
 
 FCITX_DECLARE_LOG_CATEGORY(wayland_log);

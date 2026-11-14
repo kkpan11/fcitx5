@@ -10,13 +10,15 @@
 /// \addtogroup FcitxUtils
 /// \{
 /// \file
-/// \brief A signal-slot implemention.
+/// \brief A signal-slot implementation.
 
-#include <tuple>
+#include <functional>
+#include <memory>
+#include <utility>
 #include <fcitx-utils/handlertable.h>
 #include <fcitx-utils/intrusivelist.h>
 #include <fcitx-utils/macros.h>
-#include <fcitx-utils/signals_details.h>
+#include <fcitx-utils/signals_details.h> // IWYU pragma: export
 #include <fcitx-utils/trackableobject.h>
 #include <fcitx-utils/tuplehelpers.h>
 

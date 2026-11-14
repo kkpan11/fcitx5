@@ -7,19 +7,31 @@
 #ifndef _FCITX_UI_CLASSIC_CLASSICUI_H_
 #define _FCITX_UI_CLASSIC_CLASSICUI_H_
 
+#include <cstddef>
+#include <filesystem>
 #include <memory>
-#include "config.h"
-
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 #include "fcitx-config/configuration.h"
 #include "fcitx-config/iniparser.h"
 #include "fcitx-config/option.h"
+#include "fcitx-config/rawconfig.h"
+#include "fcitx-utils/color.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/handlertable.h"
 #include "fcitx-utils/i18n.h"
-#include "fcitx/addonfactory.h"
+#include "fcitx-utils/stringutils.h"
 #include "fcitx/addoninstance.h"
 #include "fcitx/addonmanager.h"
+#include "fcitx/event.h"
 #include "fcitx/instance.h"
 #include "fcitx/userinterface.h"
 #include "classicui_public.h"
+#include "config.h"
 #include "plasmathemewatchdog.h"
 #include "portalsettingmonitor.h"
 #include "theme.h"
@@ -30,11 +42,9 @@
 #include "wayland_public.h"
 #endif
 #ifdef ENABLE_DBUS
-#include "fcitx-utils/dbus/bus.h"
 #endif
 
-namespace fcitx {
-namespace classicui {
+namespace fcitx::classicui {
 
 inline constexpr std::string_view PlasmaThemeName = "plasma";
 
@@ -47,8 +57,8 @@ public:
     virtual ~UIInterface() {}
     virtual void update(UserInterfaceComponent component,
                         InputContext *inputContext) = 0;
-    virtual void updateCursor(InputContext *) {}
-    virtual void updateCurrentInputMethod(InputContext *) {}
+    virtual void updateCursor(InputContext * /*unused*/) {}
+    virtual void updateCurrentInputMethod(InputContext * /*unused*/) {}
     virtual void suspend() = 0;
     virtual void resume() {}
     virtual void setEnableTray(bool) = 0;
@@ -57,9 +67,17 @@ private:
     const std::string name_;
 };
 
-struct NotEmpty {
-    bool check(const std::string &value) { return !value.empty(); }
-    void dumpDescription(RawConfig &) const {}
+struct ThemeNameConstrain {
+    using Type = std::string;
+
+    bool check(const std::string &value) const {
+        const auto path = std::filesystem::path(value);
+        return !value.empty() && path.is_relative() &&
+               !path.has_parent_path() && path.filename() == path &&
+               path.filename() != "." && path.filename() != "..";
+    }
+
+    void dumpDescription(RawConfig & /*unused*/) const {}
 };
 
 struct ThemeAnnotation : public EnumAnnotation {
@@ -76,7 +94,8 @@ struct ThemeAnnotation : public EnumAnnotation {
                                   themes_[i].first);
             config.setValueByPath("EnumI18n/" + std::to_string(i),
                                   themes_[i].second);
-            if (themes_[i].first != PlasmaThemeName || !plasmaTheme_) {
+            if (themes_[i].first != PlasmaThemeName &&
+                !Theme::isSystemThemeName(themes_[i].first)) {
                 config.setValueByPath(
                     "SubConfigPath/" + std::to_string(i),
                     stringutils::concat("fcitx://config/addon/classicui/theme/",
@@ -147,10 +166,10 @@ FCITX_CONFIGURATION(
             {_("For example, display character with Chinese variant when using "
                "Pinyin and Japanese variant when using Anthy. The font "
                "configuration needs to support this to use this feature.")}};
-    Option<std::string, NotEmpty, DefaultMarshaller<std::string>,
+    Option<std::string, ThemeNameConstrain, DefaultMarshaller<std::string>,
            ThemeAnnotation>
         theme{this, "Theme", _("Theme"), "default"};
-    Option<std::string, NotEmpty, DefaultMarshaller<std::string>,
+    Option<std::string, ThemeNameConstrain, DefaultMarshaller<std::string>,
            ThemeAnnotation>
         themeDark{this, "DarkTheme", _("Dark Theme"), "default-dark"};
     Option<bool> useDarkTheme{this, "UseDarkTheme",
@@ -176,7 +195,7 @@ FCITX_CONFIGURATION(
             0,
             IntConstrain(0),
             {},
-            {_("Normally Wayland uses 96 as font DPI in combinition with the "
+            {_("Normally Wayland uses 96 as font DPI in combination with the "
                "screen scale factor. This option allows you to override the "
                "font DPI. If the value is 0, it means this option is "
                "disabled.")}};
@@ -274,7 +293,6 @@ private:
     std::unique_ptr<EventSource> deferedEnableTray_;
     std::unique_ptr<PlasmaThemeWatchdog> plasmaThemeWatchdog_;
 };
-} // namespace classicui
-} // namespace fcitx
+} // namespace fcitx::classicui
 
 #endif // _FCITX_UI_CLASSIC_CLASSICUI_H_

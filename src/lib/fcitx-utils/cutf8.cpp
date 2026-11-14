@@ -11,9 +11,8 @@
 #include "utf8.h"
 
 /** check utf8 character */
-#define FCITX_ISUTF8_CB(c) (((c)&0xc0) == 0x80)
 
-#define CONT(i) FCITX_ISUTF8_CB(in[i])
+#define CONT(i) fcitx::utf8::isContinuationByte(in[i])
 #define VAL(i, s) ((in[i] & 0x3f) << s)
 
 #define UTF8_LENGTH(Char)                                                      \
@@ -27,8 +26,7 @@
                                             : ((Char) < 0x4000000 ? 5 : 6)))))
 
 #define UNICODE_VALID(Char)                                                    \
-    ((Char) < 0x110000 && (((Char)&0xFFFFF800) != 0xD800) &&                   \
-     ((Char) < 0xFDD0 || (Char) > 0xFDEF) && ((Char)&0xFFFE) != 0xFFFE)
+    ((Char) < 0x110000 && (((Char) & 0xFFFFF800) != 0xD800))
 
 size_t fcitx_utf8_strlen(const char *s) {
     size_t l = 0;
@@ -205,7 +203,8 @@ char *fcitx_utf8_get_nth_char(const char *s, uint32_t n) {
 static uint32_t fcitx_utf8_get_char_extended(const char *s, int max_len,
                                              int *plen) {
     const auto *p = reinterpret_cast<const unsigned char *>(s);
-    int i, len;
+    int i;
+    int len;
     uint32_t wc = static_cast<unsigned char>(*p);
 
     if (wc < 0x80) {

@@ -7,17 +7,22 @@
 #ifndef _FCITX_MODULES_QUICKPHRASE_QUICKPHRASE_H_
 #define _FCITX_MODULES_QUICKPHRASE_QUICKPHRASE_H_
 
+#include <memory>
+#include <string>
+#include <vector>
 #include "fcitx-config/configuration.h"
 #include "fcitx-config/enum.h"
 #include "fcitx-config/iniparser.h"
+#include "fcitx-config/option.h"
+#include "fcitx-config/rawconfig.h"
+#include "fcitx-utils/handlertable.h"
 #include "fcitx-utils/i18n.h"
 #include "fcitx-utils/key.h"
-#include "fcitx/addonfactory.h"
 #include "fcitx/addoninstance.h"
-#include "fcitx/inputcontextproperty.h"
 #include "fcitx/instance.h"
 #include "quickphrase_public.h"
 #include "quickphraseprovider.h"
+#include "quickphrasetempmode.h"
 
 namespace fcitx {
 
@@ -44,7 +49,6 @@ FCITX_CONFIGURATION(
     ExternalOption editor{this, "Editor", _("Editor"),
                           "fcitx://config/addon/quickphrase/editor"};);
 
-class QuickPhraseState;
 class QuickPhrase final : public AddonInstance {
 public:
     QuickPhrase(Instance *instance);
@@ -52,6 +56,11 @@ public:
 
     const QuickPhraseConfig &config() const { return config_; }
     Instance *instance() { return instance_; }
+    CallbackQuickPhraseProvider &callbackProvider() {
+        return callbackProvider_;
+    }
+    BuiltInQuickPhraseProvider &builtinProvider() { return builtinProvider_; }
+    SpellQuickPhraseProvider &spellProvider() { return spellProvider_; }
 
     const Configuration *getConfig() const override { return &config_; }
     void setConfig(const RawConfig &config) override {
@@ -59,41 +68,43 @@ public:
         safeSaveAsIni(config_, "conf/quickphrase.conf");
     }
     void setSubConfig(const std::string &path,
-                      const fcitx::RawConfig &) override {
+                      const fcitx::RawConfig & /*unused*/) override {
         if (path == "editor") {
             reloadConfig();
         }
     }
 
     void reloadConfig() override;
-    void updateUI(InputContext *inputContext);
-    auto &factory() { return factory_; }
 
     void trigger(InputContext *ic, const std::string &text,
                  const std::string &prefix, const std::string &str,
                  const std::string &alt, const Key &key);
     void setBuffer(InputContext *ic, const std::string &text);
+    void setBufferWithRestoreCallback(InputContext *ic, const std::string &text,
+                                      const std::string &original,
+                                      QuickPhraseRestoreCallback callback);
 
     std::unique_ptr<HandlerTableEntry<QuickPhraseProviderCallback>>
         addProvider(QuickPhraseProviderCallback);
 
+    std::unique_ptr<HandlerTableEntry<QuickPhraseProviderCallbackV2>>
+        addProviderV2(QuickPhraseProviderCallbackV2);
+
 private:
     FCITX_ADDON_EXPORT_FUNCTION(QuickPhrase, trigger);
     FCITX_ADDON_EXPORT_FUNCTION(QuickPhrase, addProvider);
+    FCITX_ADDON_EXPORT_FUNCTION(QuickPhrase, addProviderV2);
     FCITX_ADDON_EXPORT_FUNCTION(QuickPhrase, setBuffer);
-
-    void setSelectionKeys(QuickPhraseAction action);
+    FCITX_ADDON_EXPORT_FUNCTION(QuickPhrase, setBufferWithRestoreCallback);
 
     QuickPhraseConfig config_;
     Instance *instance_;
-    std::vector<std::unique_ptr<fcitx::HandlerTableEntry<fcitx::EventHandler>>>
-        eventHandlers_;
     KeyList selectionKeys_;
     KeyStates selectionModifier_;
     CallbackQuickPhraseProvider callbackProvider_;
     BuiltInQuickPhraseProvider builtinProvider_;
     SpellQuickPhraseProvider spellProvider_;
-    FactoryFor<QuickPhraseState> factory_;
+    QuickPhraseTempMode tempMode_;
 };
 } // namespace fcitx
 

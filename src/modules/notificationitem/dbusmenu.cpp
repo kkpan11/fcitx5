@@ -5,16 +5,40 @@
  *
  */
 #include "dbusmenu.h"
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <tuple>
+#include <type_traits>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+#include "fcitx-utils/charutils.h"
+#include "fcitx-utils/dbus/message.h"
+#include "fcitx-utils/dbus/objectvtable.h"
+#include "fcitx-utils/dbus/variant.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/i18n.h"
+#include "fcitx-utils/key.h"
+#include "fcitx-utils/keysym.h"
+#include "fcitx-utils/macros.h"
+#include "fcitx-utils/utf8.h"
 #include "fcitx/action.h"
+#include "fcitx/icontheme.h"
 #include "fcitx/inputcontext.h"
 #include "fcitx/inputmethodentry.h"
 #include "fcitx/inputmethodmanager.h"
 #include "fcitx/menu.h"
 #include "fcitx/misc_p.h"
 #include "fcitx/userinterfacemanager.h"
+#include "imselector_public.h"
 #include "notificationitem.h"
+#include "qtkeyname.h"
 
 namespace fcitx {
+
+namespace {
 
 //
 // libdbusmenu-gtk have a strange 30000 limitation, in order to leverage this,
@@ -40,7 +64,54 @@ enum BuiltInIndex {
     BII_Last = 300,
 };
 
-constexpr static int builtInIds = BII_Last;
+std::optional<std::vector<std::string>> dbusMenuShortcut(const Key &key) {
+    if (key.code()) {
+        return std::nullopt;
+    }
+
+    std::vector<std::string> result;
+    auto states = key.states();
+    if (key.isModifier()) {
+        states &= ~Key::keySymToStates(key.sym());
+    }
+    if (states & KeyState::Ctrl) {
+        result.emplace_back("Control");
+    }
+    if (states & KeyState::Alt) {
+        result.emplace_back("Alt");
+    }
+    if (states & KeyState::Shift) {
+        result.emplace_back("Shift");
+    }
+    if (states & KeyStates{KeyState::Super, KeyState::Super2}) {
+        result.emplace_back("Super");
+    }
+    if (states & KeyStates{KeyState::Hyper, KeyState::Hyper2}) {
+        result.emplace_back("Hyper");
+    }
+
+    if (auto name = qtKeyName(key.sym()); !name.empty()) {
+        result.emplace_back(name);
+    } else if (auto code = Key::keySymToUnicode(key.sym()); code) {
+        if (code == '+') {
+            result.emplace_back("plus");
+        } else if (code == '-') {
+            result.emplace_back("minus");
+        } else if (code < 0x80) {
+            result.emplace_back(1, charutils::toupper(code));
+        } else {
+            result.emplace_back(utf8::UCS4ToUTF8(code));
+        }
+    } else if (auto name = Key::keySymToString(key.sym()); !name.empty()) {
+        result.emplace_back(std::move(name));
+    }
+    return result.empty() ? std::nullopt
+                          : std::make_optional(std::move(result));
+}
+
+constexpr int builtInIds = BII_Last;
+
+} // namespace
 
 DBusMenu::DBusMenu(NotificationItem *item) : parent_(item) {}
 
@@ -130,7 +201,7 @@ void DBusMenu::appendProperty(
     const std::unordered_set<std::string> &propertyNames,
     const std::string &name, const dbus::Variant &variant) {
     if (name != "icon-name" && name != "label" && !propertyNames.empty() &&
-        !propertyNames.count(name)) {
+        !propertyNames.contains(name)) {
         return;
     }
     properties.emplace_back(name, variant);
@@ -189,12 +260,13 @@ void DBusMenu::fillLayoutItem(
         if (hasAction) {
             appendSubItem(subLayoutItems, BII_Separator2, depth, propertyNames);
         }
-        appendSubItem(subLayoutItems, BII_Configure, depth, propertyNames);
         if (parent_->instance()->canRestart()) {
             appendSubItem(subLayoutItems, BII_Restart, depth, propertyNames);
         }
+        appendSubItem(subLayoutItems, BII_Configure, depth, propertyNames);
         if (parent_->instance()->canRestart() &&
-            getDesktopType() != DesktopType::DEEPIN) {
+            getDesktopType() != DesktopType::DEEPIN &&
+            getDesktopType() != DesktopType::UKUI) {
             appendSubItem(subLayoutItems, BII_Exit, depth, propertyNames);
         }
     } else if (id == BII_InputMethodGroup) {
@@ -250,7 +322,7 @@ void DBusMenu::fillLayoutProperties(
         case BII_Configure:
             /* this icon sucks on KDE, why configure doesn't have "configure" */
             appendProperty(properties, propertyNames, "label",
-                           dbus::Variant(_("Configure")));
+                           dbus::Variant(_("Input Method Settings")));
             if (isKDE()) {
                 properties.emplace_back("icon-name",
                                         dbus::Variant("configure"));
@@ -292,13 +364,24 @@ void DBusMenu::fillLayoutProperties(
         if (!ic) {
             ic = parent_->instance()->mostRecentInputContext();
         }
-        // We can use pointer comparision here.
+        // We can use pointer comparison here.
         appendProperty(
             properties, propertyNames, "toggle-state",
             dbus::Variant(
                 (ic && parent_->instance()->inputMethodEntry(ic) == entry)
                     ? 1
                     : 0));
+        if (auto *imselector = parent_->imselector()) {
+            const auto switchKeys = imselector->call<IIMSelector::switchKey>();
+            if (idx < switchKeys.size()) {
+                if (auto shortcut = dbusMenuShortcut(switchKeys[idx])) {
+                    appendProperty(
+                        properties, propertyNames, "shortcut",
+                        dbus::Variant(std::vector<std::vector<std::string>>{
+                            std::move(*shortcut)}));
+                }
+            }
+        }
     } else if (id >= BII_InputMethodGroupStart &&
                id <= BII_InputMethodGroupEnd) {
         size_t idx = id - BII_InputMethodGroupStart;
@@ -335,6 +418,19 @@ void DBusMenu::fillLayoutProperties(
                        dbus::Variant(action->shortText(ic)));
         appendProperty(properties, propertyNames, "icon-name",
                        dbus::Variant(IconTheme::iconName(action->icon(ic))));
+        if (!action->hotkey().empty()) {
+            std::vector<std::vector<std::string>> shortcuts;
+            shortcuts.reserve(action->hotkey().size());
+            for (const auto &hotkey : action->hotkey()) {
+                if (auto shortcut = dbusMenuShortcut(hotkey)) {
+                    shortcuts.emplace_back(std::move(*shortcut));
+                }
+            }
+            if (!shortcuts.empty()) {
+                appendProperty(properties, propertyNames, "shortcut",
+                               dbus::Variant(std::move(shortcuts)));
+            }
+        }
         if (action->isCheckable()) {
             appendProperty(properties, propertyNames, "toggle-type",
                            dbus::Variant("radio"));
@@ -362,9 +458,9 @@ DBusMenu::getLayout(int parentId, int recursionDepth,
                     const std::vector<std::string> &propertyNames) {
     std::tuple<uint32_t, DBusMenuLayout> result;
     static_assert(
-        std::is_same<dbus::DBusSignatureToType<'u', '(', 'i', 'a', '{', 's',
-                                               'v', '}', 'a', 'v', ')'>::type,
-                     decltype(result)>::value,
+        std::is_same_v<dbus::DBusSignatureToType<'u', '(', 'i', 'a', '{', 's',
+                                                 'v', '}', 'a', 'v', ')'>::type,
+                       decltype(result)>,
         "Type not same as signature.");
 
     std::get<0>(result) = revision_;
@@ -389,7 +485,7 @@ bool DBusMenu::aboutToShow(int32_t id) {
         requestedMenus_.clear();
         return true;
     }
-    return requestedMenus_.count(id) == 0;
+    return !requestedMenus_.contains(id);
 }
 
 void DBusMenu::updateMenu(InputContext *icNeedUpdate) {

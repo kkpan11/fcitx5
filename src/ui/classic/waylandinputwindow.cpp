@@ -5,18 +5,26 @@
  *
  */
 #include "waylandinputwindow.h"
-#include <cstddef>
-#include "fcitx/misc_p.h"
+#include <cassert>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#include <cairo.h>
+#include "fcitx-utils/rect.h"
+#include "fcitx/inputcontext.h"
 #include "common.h"
+#include "ext_background_effect_manager_v1.h"
+#include "inputwindow.h"
+#include "theme.h"
 #include "waylandim_public.h"
 #include "waylandui.h"
 #include "waylandwindow.h"
 #include "wl_compositor.h"
 #include "wl_region.h"
-#include "wp_fractional_scale_manager_v1.h"
 #include "zwp_input_method_v2.h"
 #include "zwp_input_panel_v1.h"
-#include "zwp_input_popup_surface_v2.h"
 
 #ifdef __linux__
 #include <linux/input-event-codes.h>
@@ -91,7 +99,7 @@ void WaylandInputWindow::initPanel() {
 }
 
 void WaylandInputWindow::setBlurManager(
-    std::shared_ptr<wayland::OrgKdeKwinBlurManager> blur) {
+    std::shared_ptr<wayland::ExtBackgroundEffectManagerV1> blur) {
     blurManager_ = std::move(blur);
     updateBlur();
 }
@@ -109,28 +117,26 @@ void WaylandInputWindow::updateBlur() {
     if (!compositor) {
         return;
     }
-    auto width = window_->width(), height = window_->height();
+    auto width = window_->width();
+    auto height = window_->height();
     Rect rect(0, 0, width, height);
     shrink(rect, *ui_->parent()->theme().inputPanel->blurMargin);
     if (!*ui_->parent()->theme().inputPanel->enableBlur || rect.isEmpty()) {
         return;
-    } else {
-        std::vector<uint32_t> data;
-        std::unique_ptr<wayland::WlRegion> region(compositor->createRegion());
-        if (ui_->parent()->theme().inputPanel->blurMask->empty()) {
-            region->add(rect.left(), rect.top(), rect.width(), rect.height());
-        } else {
-            auto regions = parent_->theme().mask(parent_->theme().maskConfig(),
-                                                 width, height);
-            for (const auto &rect : regions) {
-                region->add(rect.left(), rect.top(), rect.width(),
-                            rect.height());
-            }
-        }
-        blur_.reset(blurManager_->create(window_->surface()));
-        blur_->setRegion(region.get());
-        blur_->commit();
     }
+    std::vector<uint32_t> data;
+    std::unique_ptr<wayland::WlRegion> region(compositor->createRegion());
+    if (ui_->parent()->theme().inputPanel->blurMask->empty()) {
+        region->add(rect.left(), rect.top(), rect.width(), rect.height());
+    } else {
+        auto regions =
+            parent_->theme().mask(parent_->theme().maskConfig(), width, height);
+        for (const auto &rect : regions) {
+            region->add(rect.left(), rect.top(), rect.width(), rect.height());
+        }
+    }
+    blur_.reset(blurManager_->getBackgroundEffect(window_->surface()));
+    blur_->setBlurRegion(region.get());
 }
 
 void WaylandInputWindow::updateScale() { window_->updateScale(); }
@@ -151,6 +157,7 @@ void WaylandInputWindow::update(fcitx::InputContext *ic) {
 
     if (!visible()) {
         CLASSICUI_DEBUG() << "Hide Wayland Input Window.";
+        hoverIndex_ = -1;
         window_->hide();
         repaintIC_.unwatch();
         panelSurface_.reset();
@@ -207,13 +214,7 @@ void WaylandInputWindow::update(fcitx::InputContext *ic) {
         updateBlur();
     }
 
-    if (auto *surface = window_->prerender()) {
-        cairo_t *c = cairo_create(surface);
-        paint(c, width, height,
-              window_->bufferScale() / WaylandWindow::ScaleDominatorF);
-        cairo_destroy(c);
-        window_->render();
-    }
+    repaint();
     repaintIC_ = ic->watch();
 }
 
@@ -224,8 +225,17 @@ void WaylandInputWindow::repaint() {
 
     if (auto *surface = window_->prerender()) {
         cairo_t *c = cairo_create(surface);
-        paint(c, window_->width(), window_->height(),
-              window_->bufferScale() / WaylandWindow::ScaleDominatorF);
+        auto surfaceWidth = cairo_image_surface_get_width(surface);
+        auto surfaceHeight = cairo_image_surface_get_height(surface);
+        cairo_surface_set_device_scale(
+            cairo_get_target(c),
+            window_->bufferScale() / WaylandWindow::ScaleDominatorF,
+            window_->bufferScale() / WaylandWindow::ScaleDominatorF);
+        paint(c,
+              surfaceWidth * WaylandWindow::ScaleDominatorF /
+                  window_->bufferScale(),
+              surfaceHeight * WaylandWindow::ScaleDominatorF /
+                  window_->bufferScale());
         cairo_destroy(c);
         window_->render();
     }

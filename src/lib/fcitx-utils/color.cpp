@@ -6,21 +6,21 @@
  */
 
 #include "color.h"
+#include <algorithm>
 #include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <ostream>
+#include <string>
 #include "charutils.h"
-#include "stringutils.h"
 
 namespace fcitx {
 static unsigned short roundColor(unsigned short c) {
     return c <= 255 ? c : 255;
 }
 
-static float roundColorF(float f) {
-    return f < 0 ? 0.0F : (f > 1.0 ? 1.0F : f);
-}
+static float roundColorF(float f) { return std::clamp(f, 0.0F, 1.0F); }
 
 static unsigned short extendColor(unsigned short c) {
     c = roundColor(c);
@@ -47,7 +47,7 @@ static inline unsigned short to_hex_digit(char hi, char lo) {
         dlo = lo - 'a' + 10;
     }
 
-    return dhi * 16 + dlo;
+    return (dhi * 16) + dlo;
 }
 
 Color::Color(unsigned short r, unsigned short g, unsigned short b,
@@ -135,7 +135,7 @@ std::string Color::toString() const {
         result.push_back(to_hex_char(hi));
         result.push_back(to_hex_char(lo));
     }
-    if (stringutils::endsWith(result, "ff")) {
+    if (result.ends_with("ff")) {
         result.erase(result.size() - 2, 2);
     }
 

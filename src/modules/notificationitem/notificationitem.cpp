@@ -7,16 +7,35 @@
 
 #include "notificationitem.h"
 #include <unistd.h>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 #include "fcitx-utils/charutils.h"
 #include "fcitx-utils/dbus/message.h"
 #include "fcitx-utils/dbus/objectvtable.h"
+#include "fcitx-utils/dbus/servicewatcher.h"
 #include "fcitx-utils/endian_p.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/handlertable.h"
 #include "fcitx-utils/i18n.h"
+#include "fcitx-utils/log.h"
 #include "fcitx/addonfactory.h"
+#include "fcitx/addoninstance.h"
 #include "fcitx/addonmanager.h"
+#include "fcitx/event.h"
+#include "fcitx/icontheme.h"
+#include "fcitx/inputmethodentry.h"
+#include "fcitx/instance.h"
 #include "fcitx/misc_p.h"
+#include "fcitx/userinterface.h"
 #include "classicui_public.h"
+#include "dbus_public.h"
 #include "dbusmenu.h"
+#include "notificationitem_public.h"
 
 #define NOTIFICATION_ITEM_DBUS_IFACE "org.kde.StatusNotifierItem"
 #define NOTIFICATION_ITEM_DEFAULT_OBJ "/StatusNotifierItem"
@@ -25,8 +44,14 @@
 #define NOTIFICATION_WATCHER_DBUS_IFACE "org.kde.StatusNotifierWatcher"
 #define DBUS_MENU_IFACE "com.canonical.dbusmenu"
 
-FCITX_DEFINE_LOG_CATEGORY(notificationitem, "notificationitem");
 #define SNI_DEBUG() FCITX_LOGC(::notificationitem, Debug)
+#define SNI_ERROR() FCITX_LOGC(::notificationitem, Error)
+
+namespace {
+
+FCITX_DEFINE_LOG_CATEGORY(notificationitem, "notificationitem");
+
+}
 
 namespace fcitx {
 
@@ -36,8 +61,8 @@ public:
 
     void scroll(int delta, const std::string &_orientation) {
         std::string orientation = _orientation;
-        std::transform(orientation.begin(), orientation.end(),
-                       orientation.begin(), charutils::tolower);
+        std::ranges::transform(orientation, orientation.begin(),
+                               charutils::tolower);
         if (orientation != "vertical") {
             return;
         }
@@ -51,38 +76,63 @@ public:
             deltaAcc_ += 120;
         }
     }
-    void activate(int, int) { parent_->instance()->toggle(); }
-    void secondaryActivate(int, int) {}
-    std::string iconName() {
-        static bool preferSymbolic = !isKDE();
-        std::string icon;
-        if (preferSymbolic) {
-            icon = "input-keyboard-symbolic";
-        } else {
-            icon = "input-keyboard";
+    void activate(int /*unused*/, int /*unused*/) {
+        parent_->instance()->toggle();
+    }
+    void secondaryActivate(int /*unused*/, int /*unused*/) {}
+    std::string keyboardIconName() const {
+        if (isKDE()) {
+            return "input-keyboard";
         }
+        return "input-keyboard-symbolic";
+    }
+    std::string iconName() {
+        std::string icon;
+
         if (auto *ic = parent_->menu()->lastRelevantIc()) {
             icon = parent_->instance()->inputMethodIcon(ic);
         }
-        if (icon == "input-keyboard" && preferSymbolic) {
-            return "input-keyboard-symbolic";
+
+        if (icon.empty() || icon == "input-keyboard") {
+            icon = keyboardIconName();
         }
+
         return IconTheme::iconName(icon);
+    }
+
+    std::string iconNamePropertyImpl() {
+        std::string label;
+        std::string icon;
+        if (auto *ic = parent_->menu()->lastRelevantIc()) {
+            label = parent_->instance()->inputMethodLabel(ic);
+            icon = parent_->instance()->inputMethodIcon(ic);
+        }
+        return preferTextIcon(label, icon) ? "" : iconName();
     }
 
     std::string label() { return ""; }
 
-    static dbus::DBusStruct<
+    std::string title() { return _("Input Method"); }
+
+    dbus::DBusStruct<
         std::string,
         std::vector<dbus::DBusStruct<int32_t, int32_t, std::vector<uint8_t>>>,
         std::string, std::string>
     tooltip() {
-        return {};
+
+        const InputMethodEntry *imEntry = nullptr;
+        if (auto *ic = parent_->menu()->lastRelevantIc()) {
+            imEntry = parent_->instance()->inputMethodEntry(ic);
+        }
+        std::string title =
+            imEntry == nullptr ? _("Input Method") : imEntry->name();
+        return {iconNamePropertyImpl(), iconPixmap(), std::move(title),
+                std::string()};
     }
 
     bool preferTextIcon(const std::string &label,
                         const std::string &icon) const {
-        auto classicui = parent_->classicui();
+        auto *classicui = parent_->classicui();
         return classicui && !label.empty() &&
                ((icon == "input-keyboard" &&
                  classicui->call<IClassicUI::showLayoutNameInIcon>() &&
@@ -104,6 +154,16 @@ public:
         lastLabel_ = std::move(label);
     }
 
+    void notifyNewTooltip() {
+        auto currentTooltip = tooltip();
+        const auto &tipTitle = std::get<2>(currentTooltip);
+        if (tipTitle.empty() || lastTitle_ == tipTitle) {
+            return;
+        }
+        newToolTip();
+        lastTitle_ = tipTitle;
+    }
+
     void reset() {
         releaseSlot();
         lastIconName_.clear();
@@ -111,7 +171,8 @@ public:
     }
 
     std::string labelText() const {
-        std::string label, icon;
+        std::string label;
+        std::string icon;
         if (auto *ic = parent_->menu()->lastRelevantIc()) {
             label = parent_->instance()->inputMethodLabel(ic);
             icon = parent_->instance()->inputMethodIcon(ic);
@@ -120,6 +181,41 @@ public:
             return "";
         }
         return label;
+    }
+
+    // Update the cached icon pixmap, return whether we have a valid icon.
+    bool updateCachedIconPixmap() {
+        auto *classicui = parent_->classicui();
+        if (!classicui) {
+            return false;
+        }
+        std::vector<dbus::DBusStruct<int, int, std::vector<uint8_t>>> result;
+        const auto label = labelText();
+        if (!label.empty() && cachedLabel_ != label) {
+            for (unsigned int size : {16, 22, 32, 48}) {
+                // swap to network byte order if we are little endian
+                auto data = classicui->call<IClassicUI::labelIcon>(label, size);
+                if (isLittleEndian()) {
+                    auto *uintBuf = reinterpret_cast<uint32_t *>(data.data());
+                    for (size_t i = 0; i < data.size() / sizeof(uint32_t);
+                         ++i) {
+                        *uintBuf = htobe32(*uintBuf);
+                        ++uintBuf;
+                    }
+                }
+                result.emplace_back(size, size, std::move(data));
+            }
+            cachedLabel_ = label;
+            cachedLabelIcon_ = result;
+        }
+        return !cachedLabel_.empty();
+    }
+
+    std::vector<dbus::DBusStruct<int, int, std::vector<uint8_t>>> iconPixmap() {
+        if (updateCachedIconPixmap()) {
+            return cachedLabelIcon_;
+        }
+        return {};
     }
 
     FCITX_OBJECT_VTABLE_METHOD(scroll, "Scroll", "is", "");
@@ -139,54 +235,14 @@ public:
                                  []() { return "SystemServices"; });
     FCITX_OBJECT_VTABLE_PROPERTY(id, "Id", "s", []() { return "Fcitx"; });
     FCITX_OBJECT_VTABLE_PROPERTY(title, "Title", "s",
-                                 []() { return _("Input Method"); });
+                                 [this]() { return title(); });
     FCITX_OBJECT_VTABLE_PROPERTY(status, "Status", "s",
                                  []() { return "Active"; });
     FCITX_OBJECT_VTABLE_PROPERTY(windowId, "WindowId", "i", []() { return 0; });
-    FCITX_OBJECT_VTABLE_PROPERTY(
-        iconName, "IconName", "s", ([this]() {
-            std::string label, icon;
-            if (auto *ic = parent_->menu()->lastRelevantIc()) {
-                label = parent_->instance()->inputMethodLabel(ic);
-                icon = parent_->instance()->inputMethodIcon(ic);
-            }
-            return preferTextIcon(label, icon) ? "" : iconName();
-        }));
-    FCITX_OBJECT_VTABLE_PROPERTY(
-        iconPixmap, "IconPixmap", "a(iiay)", ([this]() {
-            std::vector<dbus::DBusStruct<int, int, std::vector<uint8_t>>>
-                result;
-
-            auto classicui = parent_->classicui();
-            if (!classicui) {
-                return result;
-            }
-            const auto label = labelText();
-            if (!label.empty()) {
-                if (cachedLabel_ == label) {
-                    result = cachedLabelIcon_;
-                } else {
-                    for (unsigned int size : {16, 22, 32, 48}) {
-                        // swap to network byte order if we are little endian
-                        auto data =
-                            classicui->call<IClassicUI::labelIcon>(label, size);
-                        if (isLittleEndian()) {
-                            uint32_t *uintBuf =
-                                reinterpret_cast<uint32_t *>(data.data());
-                            for (size_t i = 0;
-                                 i < data.size() / sizeof(uint32_t); ++i) {
-                                *uintBuf = htobe32(*uintBuf);
-                                ++uintBuf;
-                            }
-                        }
-                        result.emplace_back(size, size, std::move(data));
-                    }
-                    cachedLabel_ = label;
-                    cachedLabelIcon_ = result;
-                }
-            }
-            return result;
-        }));
+    FCITX_OBJECT_VTABLE_PROPERTY(iconName, "IconName", "s",
+                                 [this]() { return iconNamePropertyImpl(); });
+    FCITX_OBJECT_VTABLE_PROPERTY(iconPixmap, "IconPixmap", "a(iiay)",
+                                 ([this]() { return iconPixmap(); }));
     FCITX_OBJECT_VTABLE_PROPERTY(overlayIconName, "OverlayIconName", "s",
                                  ([]() { return ""; }));
     FCITX_OBJECT_VTABLE_PROPERTY(
@@ -212,7 +268,7 @@ public:
     FCITX_OBJECT_VTABLE_PROPERTY(attentionMovieName, "AttentionMovieName", "s",
                                  []() { return ""; });
     FCITX_OBJECT_VTABLE_PROPERTY(tooltip, "ToolTip", "(sa(iiay)ss)",
-                                 []() { return tooltip(); });
+                                 [this]() { return tooltip(); });
     FCITX_OBJECT_VTABLE_PROPERTY(itemIsMenu, "ItemIsMenu", "b",
                                  []() { return false; });
     FCITX_OBJECT_VTABLE_PROPERTY(menu, "Menu", "o",
@@ -238,6 +294,7 @@ private:
     std::string cachedLabel_;
     std::vector<dbus::DBusStruct<int, int, std::vector<uint8_t>>>
         cachedLabelIcon_;
+    std::string lastTitle_;
 };
 
 NotificationItem::NotificationItem(Instance *instance)
@@ -280,26 +337,27 @@ void NotificationItem::setRegistered(bool registered) {
     registered_ = registered;
 
     if (registered_) {
-        auto updateIcon = [this](Event &e) {
+        auto updateIconAndTitle = [this](Event &e) {
             InputContext *ic = nullptr;
             if (e.isInputContextEvent()) {
                 ic = dynamic_cast<InputContextEvent &>(e).inputContext();
             }
             menu_->updateMenu(ic);
             newIcon();
+            newToolTip();
         };
         for (auto type : {EventType::InputContextFocusIn,
                           EventType::InputContextSwitchInputMethod,
                           EventType::InputMethodGroupChanged}) {
             eventHandlers_.emplace_back(instance_->watchEvent(
-                type, EventWatcherPhase::Default, updateIcon));
+                type, EventWatcherPhase::Default, updateIconAndTitle));
         }
         eventHandlers_.emplace_back(instance_->watchEvent(
             EventType::InputContextFlushUI, EventWatcherPhase::Default,
-            [updateIcon](Event &event) {
+            [updateIconAndTitle](Event &event) {
                 if (static_cast<InputContextFlushUIEvent &>(event)
                         .component() == UserInterfaceComponent::StatusArea) {
-                    updateIcon(event);
+                    updateIconAndTitle(event);
                 }
             }));
     }
@@ -363,7 +421,8 @@ void NotificationItem::maybeScheduleRegister() {
 }
 
 void NotificationItem::enable() {
-    if (enabled_) {
+    enabled_ += 1;
+    if (enabled_ > 1) {
         return;
     }
 
@@ -373,13 +432,20 @@ void NotificationItem::enable() {
 }
 
 void NotificationItem::disable() {
-    if (!enabled_) {
-        return;
-    }
+    instance_->eventDispatcher().scheduleWithContext(
+        lifeTimeTracker_.watch(), [this]() {
+            if (enabled_ == 0) {
+                SNI_ERROR()
+                    << "NotificationItem::disable called without enable.";
+                return;
+            }
 
-    SNI_DEBUG() << "Disable SNI";
-    enabled_ = false;
-    setRegistered(false);
+            SNI_DEBUG() << "Disable SNI";
+            enabled_ -= 1;
+            if (enabled_ == 0) {
+                setRegistered(false);
+            }
+        });
 }
 
 void NotificationItem::cleanUp() {
@@ -406,6 +472,13 @@ void NotificationItem::newIcon() {
     // sni_->xayatanaNewLabel(sni_->label(), sni_->label());
 }
 
+void NotificationItem::newToolTip() {
+    if (!sni_->isRegistered()) {
+        return;
+    }
+    sni_->notifyNewTooltip();
+}
+
 class NotificationItemFactory : public AddonFactory {
     AddonInstance *create(AddonManager *manager) override {
         return new NotificationItem(manager->instance());
@@ -414,4 +487,4 @@ class NotificationItemFactory : public AddonFactory {
 
 } // namespace fcitx
 
-FCITX_ADDON_FACTORY(fcitx::NotificationItemFactory)
+FCITX_ADDON_FACTORY_V2(notificationitem, fcitx::NotificationItemFactory)

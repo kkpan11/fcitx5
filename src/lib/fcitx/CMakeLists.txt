@@ -23,8 +23,11 @@ set(FCITX_CORE_SOURCES
     statusarea.cpp
     inputpanel.cpp
     candidatelist.cpp
+    candidateaction.cpp
     icontheme.cpp
     inputmethodengine.cpp
+    tempmode.cpp
+    tempmodemanager.cpp
     )
 
 set(FCITX_CORE_HEADERS
@@ -38,6 +41,7 @@ set(FCITX_CORE_HEADERS
     inputcontextproperty.h
     inputpanel.h
     candidatelist.h
+    candidateaction.h
     focusgroup.h
     surroundingtext.h
     addonloader.h
@@ -55,30 +59,45 @@ set(FCITX_CORE_HEADERS
     userinterfacemanager.h
     icontheme.h
     statusarea.h
+    tempmode.h
+    tempmodemanager.h
     ${CMAKE_CURRENT_BINARY_DIR}/fcitxcore_export.h
     )
+
+if (ENABLE_DL)
+    list(APPEND FCITX_CORE_SOURCES sharedlibraryloader.cpp)
+endif()
 
 ecm_setup_version(PROJECT
                   VARIABLE_PREFIX Fcitx5Core
                   PACKAGE_VERSION_FILE "${CMAKE_CURRENT_BINARY_DIR}/Fcitx5CoreConfigVersion.cmake"
                   SOVERSION 7)
 
-add_library(Fcitx5Core SHARED ${FCITX_CORE_SOURCES})
+add_library(Fcitx5Core ${FCITX_CORE_SOURCES})
 set_target_properties(Fcitx5Core
   PROPERTIES VERSION ${Fcitx5Core_VERSION}
   SOVERSION ${Fcitx5Core_SOVERSION}
   EXPORT_NAME Core
   )
+
+if(HAVE_NO_DEPRECATED_DECLARATIONS)
+  set_source_files_properties(icontheme.cpp PROPERTIES COMPILE_FLAGS "-Wno-deprecated-declarations")
+endif()
+
 target_include_directories(Fcitx5Core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/..>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_FULL_INCLUDEDIR}/Fcitx5/Core>)
-target_link_libraries(Fcitx5Core PUBLIC Fcitx5::Config Fcitx5::Utils PRIVATE LibIntl::LibIntl ${FMT_TARGET})
+target_link_libraries(Fcitx5Core PUBLIC Fcitx5::Config Fcitx5::Utils PRIVATE LibIntl::LibIntl)
 if (ENABLE_KEYBOARD)
     target_link_libraries(Fcitx5Core PRIVATE XKBCommon::XKBCommon)
 endif()
 if (ENABLE_LIBUUID)
     target_link_libraries(Fcitx5Core PRIVATE LibUUID::LibUUID)
+endif()
+
+if (NOT ENABLE_DL)
+    target_compile_definitions(Fcitx5Core PRIVATE -DFCITX_NO_DL)
 endif()
 
 configure_file(Fcitx5Core.pc.in ${CMAKE_CURRENT_BINARY_DIR}/Fcitx5Core.pc @ONLY)

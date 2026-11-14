@@ -5,9 +5,19 @@
  *
  */
 #include "stringutils.h"
+#include <array>
+#include <cassert>
 #include <climits>
+#include <cstdint>
 #include <cstring>
+#include <initializer_list>
+#include <limits>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+#include <fcitx-utils/fcitxutils_export.h>
 #include "charutils.h"
 #include "macros.h"
 
@@ -71,31 +81,64 @@ std::string concatPathPieces(
 }
 } // namespace details
 
+namespace {
+
+constexpr std::array<char, std::numeric_limits<uint8_t>::max()> escapeMap =
+    []() consteval {
+        std::array<char, std::numeric_limits<uint8_t>::max()> table{};
+        table.fill('\0');
+        table['\\'] = '\\';
+        table['"'] = '"';
+        table['\n'] = 'n';
+        table['\f'] = 'f';
+        table['\r'] = 'r';
+        table['\t'] = 't';
+        table['\v'] = 'v';
+        return table;
+    }();
+
+constexpr std::array<char, std::numeric_limits<uint8_t>::max()> unescapeMap =
+    []() consteval {
+        std::array<char, std::numeric_limits<uint8_t>::max()> table{};
+        table.fill('\0');
+        table['\\'] = '\\';
+        table['"'] = '"';
+        table['n'] = '\n';
+        table['f'] = '\f';
+        table['r'] = '\r';
+        table['t'] = '\t';
+        table['v'] = '\v';
+        return table;
+    }();
+
+template <SplitBehavior behavior>
+std::vector<std::string> splitImpl(std::string_view str,
+                                   std::string_view delim) {
+    std::vector<std::string> strings;
+    for (const auto part : splitView<behavior>(str, delim)) {
+        strings.emplace_back(part);
+    }
+    return strings;
+}
+
+} // namespace
+
 FCITXUTILS_DEPRECATED_EXPORT bool startsWith(const std::string &str,
                                              const std::string &prefix) {
-    return startsWith(std::string_view(str), std::string_view(prefix));
+    return str.starts_with(prefix);
 }
 
 bool startsWith(std::string_view str, std::string_view prefix) {
-    if (str.size() < prefix.size()) {
-        return false;
-    }
-
-    return (str.compare(0, prefix.size(), prefix) == 0);
+    return str.starts_with(prefix);
 }
 
 FCITXUTILS_DEPRECATED_EXPORT bool endsWith(const std::string &str,
                                            const std::string &suffix) {
-    return endsWith(std::string_view(str), std::string_view(suffix));
+    return str.ends_with(suffix);
 }
 
 bool endsWith(std::string_view str, std::string_view suffix) {
-    if (str.size() < suffix.size()) {
-        return false;
-    }
-
-    return (str.compare(str.size() - suffix.size(), suffix.size(), suffix) ==
-            0);
+    return str.ends_with(suffix);
 }
 
 inline std::pair<std::string::size_type, std::string::size_type>
@@ -145,30 +188,10 @@ std::vector<std::string> split(const std::string &str, const std::string &delim,
 
 std::vector<std::string> split(std::string_view str, std::string_view delim,
                                SplitBehavior behavior) {
-    std::vector<std::string> strings;
-    std::string::size_type lastPos;
-    std::string::size_type pos;
     if (behavior == SplitBehavior::SkipEmpty) {
-        lastPos = str.find_first_not_of(delim, 0);
-    } else {
-        lastPos = 0;
+        return splitImpl<SplitBehavior::SkipEmpty>(str, delim);
     }
-    pos = str.find_first_of(delim, lastPos);
-
-    while (std::string::npos != pos || std::string::npos != lastPos) {
-        strings.push_back(std::string(str.substr(lastPos, pos - lastPos)));
-        if (behavior == SplitBehavior::SkipEmpty) {
-            lastPos = str.find_first_not_of(delim, pos);
-        } else {
-            if (pos == std::string::npos) {
-                break;
-            }
-            lastPos = pos + 1;
-        }
-        pos = str.find_first_of(delim, lastPos);
-    }
-
-    return strings;
+    return splitImpl<SplitBehavior::KeepEmpty>(str, delim);
 }
 
 FCITXUTILS_DEPRECATED_EXPORT std::vector<std::string>
@@ -177,7 +200,7 @@ split(const std::string &str, const std::string &delim) {
 }
 
 std::vector<std::string> split(std::string_view str, std::string_view delim) {
-    return split(str, delim, SplitBehavior::SkipEmpty);
+    return splitImpl<SplitBehavior::SkipEmpty>(str, delim);
 }
 
 std::string replaceAll(std::string str, const std::string &before,
@@ -339,20 +362,15 @@ bool unescape(std::string &str, bool unescapeQuote) {
             }
             break;
         case UnescapeState::ESCAPE:
-            if (str[i] == '\\') {
-                str[j] = '\\';
+            if (auto c = unescapeMap[str[i]];
+                c && (unescapeQuote || c != '"')) {
+                str[j] = c;
                 j++;
-            } else if (str[i] == 'n') {
-                str[j] = '\n';
-                j++;
-            } else if (str[i] == '\"' && unescapeQuote) {
-                str[j] = '\"';
-                j++;
-            } else {
-                return false;
+                state = UnescapeState::NORMAL;
+                break;
             }
-            state = UnescapeState::NORMAL;
-            break;
+            // invalid escape sequence
+            return false;
         }
     } while (str[i++]);
     str.resize(j - 1);
@@ -360,51 +378,114 @@ bool unescape(std::string &str, bool unescapeQuote) {
 }
 
 std::optional<std::string> unescapeForValue(std::string_view str) {
-    bool unescapeQuote = false;
     // having quote at beginning and end, escape
     if (str.size() >= 2 && str.front() == '"' && str.back() == '"') {
-        unescapeQuote = true;
-        str = str.substr(1, str.size() - 2);
-    }
-    if (str.empty()) {
-        return std::string();
-    }
-
-    std::string value(str);
-    if (!stringutils::unescape(value, unescapeQuote)) {
+        std::string result;
+        auto originLength = str.size();
+        auto consumed = consumeMaybeEscapedValue(str, "", &result);
+        if (consumed.size() == originLength) {
+            return result;
+        }
         return std::nullopt;
     }
-    return value;
+    return std::string{str};
 }
 
 std::string escapeForValue(std::string_view str) {
     std::string value;
     value.reserve(str.size());
-    const bool needQuote =
-        str.find_first_of("\f\r\t\v \"") != std::string::npos;
-    if (needQuote) {
+    const bool needEscape =
+        str.find_first_of("\f\r\t\v \"\\\n") != std::string::npos;
+    if (needEscape) {
         value.push_back('"');
     }
     for (char c : str) {
-        switch (c) {
-        case '\\':
-            value.append("\\\\");
-            break;
-        case '\n':
-            value.append("\\n");
-            break;
-        case '"':
-            value.append("\\\"");
-            break;
-        default:
+        if (auto escape = escapeMap[static_cast<uint8_t>(c)]) {
+            value.push_back('\\');
+            value.push_back(escape);
+        } else {
             value.push_back(c);
-            break;
         }
     }
-    if (needQuote) {
+    if (needEscape) {
         value.push_back('"');
     }
 
     return value;
 }
+
+bool consumePrefix(std::string_view &str, std::string_view prefix) {
+    if (str.starts_with(prefix)) {
+        str = str.substr(prefix.size());
+        return true;
+    }
+    return false;
+}
+
+std::string_view consumeMaybeEscapedValue(std::string_view &input,
+                                          std::string_view skip,
+                                          std::string *output) {
+    auto start = input.find_first_not_of(skip);
+    if (start == std::string_view::npos) {
+        input = std::string_view();
+        if (output) {
+            output->clear();
+        }
+        return {};
+    }
+
+    input = input.substr(start);
+    assert(!input.empty());
+    const bool maybeQuoted = input.front() == '"';
+    if (maybeQuoted) {
+        std::string result;
+        UnescapeState state = UnescapeState::NORMAL;
+        size_t end = 0;
+        for (size_t i = 1; i < input.size(); i++) {
+            const char c = input[i];
+            switch (state) {
+            case UnescapeState::NORMAL:
+                if (c == '\\') {
+                    state = UnescapeState::ESCAPE;
+                } else if (c == '"') {
+                    end = i + 1;
+                    break;
+                } else {
+                    result.push_back(c);
+                }
+                break;
+            case UnescapeState::ESCAPE:
+                if (auto c = unescapeMap[input[i]]) {
+                    result.push_back(c);
+                } else {
+                    // invalid escape sequence
+                    // and treat it as normal character.
+                    result.push_back(input[i]);
+                }
+                state = UnescapeState::NORMAL;
+                break;
+            }
+            if (end) {
+                break;
+            }
+        }
+        if (end > 0) {
+            auto consumed = input.substr(0, end);
+            input = input.substr(end);
+            if (output) {
+                *output = std::move(result);
+            }
+            return consumed;
+        }
+    }
+    auto end = input.find_first_of(skip, 1);
+    auto consumed = input.substr(0, end);
+    input =
+        end == std::string_view::npos ? std::string_view() : input.substr(end);
+    if (output) {
+        *output = std::string(consumed);
+    }
+    return consumed;
+}
+
 } // namespace fcitx::stringutils

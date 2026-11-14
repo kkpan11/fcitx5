@@ -6,16 +6,30 @@
  */
 
 #include "virtualkeyboard.h"
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <memory>
+#include <string>
+#include <vector>
+#include "fcitx-utils/dbus/bus.h"
 #include "fcitx-utils/dbus/message.h"
 #include "fcitx-utils/dbus/objectvtable.h"
 #include "fcitx-utils/dbus/servicewatcher.h"
+#include "fcitx-utils/flags.h"
 #include "fcitx-utils/key.h"
+#include "fcitx-utils/keysym.h"
 #include "fcitx-utils/log.h"
 #include "fcitx-utils/utf8.h"
+#include "fcitx/addonfactory.h"
+#include "fcitx/addoninstance.h"
 #include "fcitx/addonmanager.h"
 #include "fcitx/candidatelist.h"
+#include "fcitx/event.h"
 #include "fcitx/inputcontext.h"
 #include "fcitx/instance.h"
+#include "fcitx/text.h"
+#include "fcitx/userinterface.h"
 #include "fcitx/userinterfacemanager.h"
 #include "dbus_public.h"
 #include "notificationitem_public.h"
@@ -32,7 +46,7 @@ public:
 
     void showVirtualKeyboard() { parent_->showVirtualKeyboardForcibly(); }
 
-    void hideVirtualKeyboard() { parent_->hideVirtualKeyboard(); }
+    void hideVirtualKeyboard() { parent_->hideVirtualKeyboardForcibly(); }
 
     void toggleVirtualKeyboard() { parent_->toggleVirtualKeyboard(); }
 
@@ -323,13 +337,25 @@ void VirtualKeyboard::showVirtualKeyboardForcibly() {
     showVirtualKeyboard();
 }
 
+void VirtualKeyboard::hideVirtualKeyboardForcibly() {
+    if (!available_) {
+        return;
+    }
+
+    hideVirtualKeyboard();
+
+    if (!instance_->virtualKeyboardAutoShow()) {
+        instance_->setInputMethodMode(InputMethodMode::PhysicalKeyboard);
+    }
+}
+
 void VirtualKeyboard::toggleVirtualKeyboard() {
     if (!available_) {
         return;
     }
 
     if (visible_) {
-        hideVirtualKeyboard();
+        hideVirtualKeyboardForcibly();
     } else {
         showVirtualKeyboardForcibly();
     }
@@ -419,8 +445,9 @@ std::vector<std::string> VirtualKeyboard::makeCandidateTextList(
             continue;
         }
 
-        auto candidateText =
-            instance_->outputFilter(inputContext, candidate.text());
+        auto candidateText = instance_->outputFilter(
+            inputContext, candidate.textWithComment(
+                              candidate.spaceBetweenComment() ? " " : ""));
         candidateTextList.push_back(candidateText.toString());
     }
 
@@ -446,7 +473,7 @@ std::vector<std::string> VirtualKeyboard::makeBulkCandidateTextList(
                 continue;
             }
 
-            candidateText = candidate.text();
+            candidateText = candidate.textWithComment();
         } catch (...) {
             break;
         }
@@ -459,13 +486,12 @@ std::vector<std::string> VirtualKeyboard::makeBulkCandidateTextList(
 
 int VirtualKeyboard::globalCursorIndex(
     std::shared_ptr<CandidateList> candidateList) const {
-    auto *commonCandidateList =
-        dynamic_cast<CommonCandidateList *>(candidateList.get());
-    if (commonCandidateList == nullptr) {
+    auto *bulkCursor = candidateList->toBulkCursor();
+    if (bulkCursor == nullptr) {
         return -1;
     }
 
-    return commonCandidateList->globalCursorIndex();
+    return bulkCursor->globalCursorIndex();
 }
 
 void VirtualKeyboard::updateCandidateArea(
@@ -536,4 +562,4 @@ public:
 };
 } // namespace fcitx
 
-FCITX_ADDON_FACTORY(fcitx::VirtualKeyboardFactory);
+FCITX_ADDON_FACTORY_V2(virtualkeyboard, fcitx::VirtualKeyboardFactory);

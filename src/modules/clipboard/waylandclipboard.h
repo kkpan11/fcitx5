@@ -7,27 +7,62 @@
 #ifndef _FCITX5_MODULES_CLIPBOARD_WAYLANDCLIPBOARD_H_
 #define _FCITX5_MODULES_CLIPBOARD_WAYLANDCLIPBOARD_H_
 
+#include <cstdint>
 #include <functional>
+#include <list>
+#include <memory>
+#include <mutex>
+#include <string>
 #include <thread>
-#include <fcitx-utils/event.h>
-#include <fcitx-utils/eventdispatcher.h>
-#include <fcitx-utils/signals.h>
-#include <fcitx-utils/unixfd.h>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <wayland-client-core.h>
+#include "fcitx-utils/event.h"
+#include "fcitx-utils/eventdispatcher.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/signals.h"
+#include "fcitx-utils/trackableobject.h"
+#include "fcitx-utils/unixfd.h"
 #include "display.h"
+#include "ext_data_control_device_v1.h"
+#include "ext_data_control_manager_v1.h"
+#include "ext_data_control_offer_v1.h"
 #include "zwlr_data_control_device_v1.h"
 #include "zwlr_data_control_manager_v1.h"
+#include "zwlr_data_control_offer_v1.h"
 
 namespace fcitx {
 
 // DataDevice receives primary/selection by DataOffer. It also starts
 // DataReaderThread that will read data from file descriptor.
 // Upon receive DataOffer, DataReaderThread::addTask will be used to
-// initiate a reading task and call the callback if it suceeds.
+// initiate a reading task and call the callback if it succeeds.
 
-using DataOfferCallback = std::function<void(const std::vector<char> &)>;
+using DataOfferDataCallback =
+    std::function<void(const std::vector<char> &data)>;
+using DataOfferCallback =
+    std::function<void(const std::vector<char> &data, bool password)>;
+
+class DataOfferInterface : public TrackableObject<DataOfferInterface> {
+public:
+    virtual ~DataOfferInterface();
+};
+
+template <typename DataControlOffer>
+class DataOffer;
 
 struct DataOfferTask {
-    DataOfferCallback callback_;
+    DataOfferTask() = default;
+    DataOfferTask(const DataOfferTask &) = delete;
+    DataOfferTask(DataOfferTask &&) = delete;
+
+    DataOfferTask &operator=(const DataOfferTask &) = delete;
+    DataOfferTask &operator=(DataOfferTask &&) = delete;
+
+    uint64_t id_ = 0;
+    TrackableObjectReference<DataOfferInterface> offer_;
+    DataOfferDataCallback callback_;
     std::shared_ptr<UnixFD> fd_;
     std::vector<char> data_;
     std::unique_ptr<EventSourceIO> ioEvent_;
@@ -36,12 +71,20 @@ struct DataOfferTask {
 
 class DataReaderThread {
 public:
-    DataReaderThread(EventLoop *main) { dispatcherToMain_.attach(main); }
+    DataReaderThread(EventDispatcher &dispatcherToMain)
+        : dispatcherToMain_(dispatcherToMain) {}
 
     ~DataReaderThread() {
         if (thread_ && thread_->joinable()) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                terminate_ = true;
+            }
+            // If dispatcher is not attached, the schedule will do nothing.
+            // But after attach, reader thread will check terminate_
+            // So it won't stuck forever.
             dispatcherToWorker_.schedule([this]() {
-                if (auto loop = dispatcherToWorker_.eventLoop()) {
+                if (auto *loop = dispatcherToWorker_.eventLoop()) {
                     loop->exit();
                 }
             });
@@ -55,32 +98,53 @@ public:
 
     static void run(DataReaderThread *self) { self->realRun(); }
 
-    uint64_t addTask(std::shared_ptr<UnixFD> fd, DataOfferCallback callback);
+    uint64_t addTask(DataOfferInterface *offer, std::shared_ptr<UnixFD> fd,
+                     DataOfferDataCallback callback);
     void removeTask(uint64_t token);
 
 private:
+    // Function that run on reader thread
     void realRun();
+    void addTaskOnWorker(uint64_t id,
+                         TrackableObjectReference<DataOfferInterface> offer,
+                         std::shared_ptr<UnixFD> fd,
+                         DataOfferDataCallback callback);
+    void handleTaskIO(DataOfferTask *task, IOEventFlags flags);
+    void handleTaskTimeout(DataOfferTask *task);
+    // End of function that run on reader thread
 
-    EventDispatcher dispatcherToMain_;
-    EventDispatcher dispatcherToWorker_;
+    EventDispatcher &dispatcherToMain_;
     std::unique_ptr<std::thread> thread_;
-    // Value only handled by the reader thread.
     uint64_t nextId_ = 1;
-    std::unordered_map<uint64_t, std::unique_ptr<DataOfferTask>> *tasks_ =
-        nullptr;
+
+    // Accessed by both thread
+    std::mutex mutex_;
+    bool terminate_ = false;
+    // End Accessed by both thread
+
+    // Value only read/write by the reader thread.
+    EventDispatcher dispatcherToWorker_;
+    std::unordered_map<uint64_t, DataOfferTask> tasks_;
 };
 
-class DataOffer {
+template <typename DataControlOffer>
+class DataOffer : public DataOfferInterface {
 public:
-    DataOffer(wayland::ZwlrDataControlOfferV1 *offer);
-    ~DataOffer();
+    DataOffer(DataControlOffer *offer, bool ignorePassword);
+    ~DataOffer() override;
 
     void receiveData(DataReaderThread &thread, DataOfferCallback callback);
 
 private:
+    void receiveDataForMime(const std::string &mime,
+                            DataOfferDataCallback callback);
+    void receiveRealData(DataOfferDataCallback callback);
+
     std::list<ScopedConnection> conns_;
     std::unordered_set<std::string> mimeTypes_;
-    std::unique_ptr<wayland::ZwlrDataControlOfferV1> offer_;
+    std::unique_ptr<DataControlOffer> offer_;
+    bool ignorePassword_ = true;
+    bool isPassword_ = false;
     UnixFD fd_;
     DataReaderThread *thread_ = nullptr;
     uint64_t taskId_ = 0;
@@ -89,41 +153,71 @@ private:
 class WaylandClipboard;
 class Clipboard;
 
-class DataDevice {
+class DataDeviceInterface {
 public:
-    DataDevice(WaylandClipboard *clipboard,
-               wayland::ZwlrDataControlDeviceV1 *device);
+    virtual ~DataDeviceInterface();
+};
+
+template <typename DataControlDevice>
+struct DataControlDeviceTraits;
+
+template <>
+struct DataControlDeviceTraits<wayland::ExtDataControlDeviceV1> {
+    using DataControlOfferType = wayland::ExtDataControlOfferV1;
+};
+
+template <>
+struct DataControlDeviceTraits<wayland::ZwlrDataControlDeviceV1> {
+    using DataControlOfferType = wayland::ZwlrDataControlOfferV1;
+};
+
+template <typename DataControlDevice>
+class DataDevice : public DataDeviceInterface {
+    using DataControlOfferType = typename DataControlDeviceTraits<
+        DataControlDevice>::DataControlOfferType;
+    using DataOfferType = DataOffer<DataControlOfferType>;
+
+public:
+    DataDevice(WaylandClipboard *clipboard, DataControlDevice *device);
 
 private:
     WaylandClipboard *clipboard_;
-    std::unique_ptr<wayland::ZwlrDataControlDeviceV1> device_;
+    std::unique_ptr<DataControlDevice> device_;
     DataReaderThread thread_;
-    std::unique_ptr<DataOffer> primaryOffer_;
-    std::unique_ptr<DataOffer> clipboardOffer_;
+    std::unique_ptr<DataOfferType> primaryOffer_;
+    std::unique_ptr<DataOfferType> clipboardOffer_;
     std::list<ScopedConnection> conns_;
 };
 
-class WaylandClipboard {
+class WaylandClipboard : public TrackableObject<WaylandClipboard> {
 
 public:
-    WaylandClipboard(Clipboard *parent, const std::string &name,
+    WaylandClipboard(Clipboard *clipboard, std::string name,
                      wl_display *display);
 
-    void setClipboard(const std::string &str);
-    void setPrimary(const std::string &str);
-    EventLoop *eventLoop();
+    void setClipboard(const std::string &str, bool password);
+    void setPrimary(const std::string &str, bool password);
     auto display() const { return display_; }
+    auto parent() const { return parent_; }
 
 private:
+    void deferRefreshSeat();
     void refreshSeat();
     Clipboard *parent_;
     std::string name_;
     wayland::Display *display_;
     ScopedConnection globalConn_;
     ScopedConnection globalRemoveConn_;
-    std::shared_ptr<wayland::ZwlrDataControlManagerV1> manager_;
-    std::unordered_map<wayland::WlSeat *, std::unique_ptr<DataDevice>>
-        deviceMap_;
+    std::shared_ptr<wayland::ExtDataControlManagerV1> extManager_;
+    std::shared_ptr<wayland::ZwlrDataControlManagerV1> wlrManager_;
+    std::unordered_map<
+        wayland::WlSeat *,
+        std::unique_ptr<DataDevice<wayland::ExtDataControlDeviceV1>>>
+        extDeviceMap_;
+    std::unordered_map<
+        wayland::WlSeat *,
+        std::unique_ptr<DataDevice<wayland::ZwlrDataControlDeviceV1>>>
+        wlrDeviceMap_;
 };
 
 } // namespace fcitx

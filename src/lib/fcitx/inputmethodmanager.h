@@ -13,8 +13,8 @@
 #include <vector>
 #include <fcitx-utils/connectableobject.h>
 #include <fcitx-utils/macros.h>
+#include <fcitx/fcitxcore_export.h>
 #include <fcitx/inputmethodgroup.h>
-#include "fcitxcore_export.h"
 
 /// \addtogroup FcitxCore
 /// \{
@@ -103,7 +103,7 @@ public:
      */
     void setDefaultInputMethod(const std::string &name);
 
-    /// Return the input methdo group of given name.
+    /// Return the input method group of given name.
     const InputMethodGroup *group(const std::string &name) const;
 
     /**

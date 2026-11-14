@@ -6,6 +6,11 @@
  *
  */
 #include "longpress.h"
+#include <list>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace fcitx {
 
@@ -130,9 +135,9 @@ void setupDefaultLongPressConfig(LongPressConfig &config) {
             // Currency
             //
             {"$", {"¢", "€", "£", "¥", "₹", "₽", "₺", "₩", "₱", "₿"}},
-        };
+    };
     {
-        auto value = config.entries.mutableValue();
+        auto *value = config.entries.mutableValue();
         for (const auto &[key, candidates] : data) {
             LongPressEntryConfig entry;
             entry.key.setValue(key);

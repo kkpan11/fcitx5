@@ -7,11 +7,15 @@
 #ifndef _FCITX_UTILS_HANDLERTABLE_DETAILS_H_
 #define _FCITX_UTILS_HANDLERTABLE_DETAILS_H_
 
-#include <list>
+// IWYU pragma: private, include <fcitx-utils/handlertable.h>
+
+#include <cstddef>
+#include <iterator>
 #include <memory>
 #include <vector>
+#include <fcitx-utils/fcitxutils_export.h>
 #include <fcitx-utils/intrusivelist.h>
-#include "fcitxutils_export.h"
+#include <fcitx-utils/macros.h>
 
 namespace fcitx {
 
@@ -113,6 +117,8 @@ public:
         using reference = value_type &;
         using pointer = value_type *;
 
+        iterator() = default;
+
         iterator(typename container_type::const_iterator iter,
                  typename container_type::const_iterator end)
             : parentIter_(iter), endIter_(end) {
@@ -146,9 +152,9 @@ public:
             return {old, endIter_};
         }
 
-        reference operator*() { return ***parentIter_; }
+        reference operator*() const { return ***parentIter_; }
 
-        pointer operator->() { return (**parentIter_).get(); }
+        pointer operator->() const { return (**parentIter_).get(); }
 
     private:
         typename container_type::const_iterator parentIter_;

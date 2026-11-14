@@ -5,12 +5,23 @@
  *
  */
 #include "plasmathemewatchdog.h"
+#include <fcntl.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <cassert>
+#include <cerrno>
+#include <csignal>
+#include <cstdint>
+#include <functional>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include "fcitx-utils/event.h"
-#include "fcitx-utils/misc_p.h"
-#include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/fs.h"
+#include "fcitx-utils/standardpaths.h"
+#include "fcitx-utils/unixfd.h"
 #include "common.h"
 
 #if defined(__FreeBSD__)
@@ -25,7 +36,7 @@ namespace fcitx::classicui {
 
 bool PlasmaThemeWatchdog::isAvailable() {
     static const std::string binaryName = PLASMA_THEME_GENERATOR;
-    return StandardPath::hasExecutable(binaryName);
+    return StandardPaths::hasExecutable(binaryName);
 }
 
 PlasmaThemeWatchdog::PlasmaThemeWatchdog(EventLoop *event,

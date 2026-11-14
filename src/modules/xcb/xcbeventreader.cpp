@@ -5,13 +5,22 @@
  *
  */
 #include "xcbeventreader.h"
+#include <list>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <utility>
 #include <xcb/xcb.h>
 #include "fcitx-utils/event.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/log.h"
+#include "fcitx-utils/misc.h"
 #include "xcbconnection.h"
 #include "xcbmodule.h"
 
 namespace fcitx {
-XCBEventReader::XCBEventReader(XCBConnection *conn) : conn_(conn) {
+XCBEventReader::XCBEventReader(XCBConnection *conn)
+    : conn_(conn), dispatcherToMain_(conn->instance()->eventDispatcher()) {
     postEvent_ =
         conn->instance()->eventLoop().addPostEvent([this](EventSource *source) {
             if (xcb_connection_has_error(conn_->connection())) {
@@ -20,9 +29,9 @@ XCBEventReader::XCBEventReader(XCBConnection *conn) : conn_(conn) {
             }
             FCITX_XCB_DEBUG() << "xcb_flush";
             xcb_flush(conn_->connection());
+            wakeUp();
             return true;
         });
-    dispatcherToMain_.attach(&conn->instance()->eventLoop());
     thread_ = std::make_unique<std::thread>(&XCBEventReader::runThread, this);
 }
 
@@ -50,7 +59,7 @@ bool XCBEventReader::onIOEvent(IOEventFlags flags) {
         hadError_ = true;
         FCITX_WARN() << "XCB connection \"" << conn_->name()
                      << "\" got error: " << err;
-        dispatcherToMain_.schedule([this]() {
+        dispatcherToMain_.scheduleWithContext(watch(), [this]() {
             deferEvent_ =
                 conn_->parent()->instance()->eventLoop().addDeferEvent(
                     [this](EventSource *) {
@@ -72,7 +81,8 @@ bool XCBEventReader::onIOEvent(IOEventFlags flags) {
         hasEvent = !events_.empty();
     }
     if (hasEvent) {
-        dispatcherToMain_.schedule([this]() { conn_->processEvent(); });
+        dispatcherToMain_.scheduleWithContext(
+            watch(), [this]() { conn_->processEvent(); });
     }
     return true;
 }

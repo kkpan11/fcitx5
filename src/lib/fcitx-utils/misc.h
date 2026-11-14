@@ -7,15 +7,22 @@
 #ifndef _FCITX_UTILS_MISC_H_
 #define _FCITX_UTILS_MISC_H_
 
+#include <optional>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
 #include <unistd.h>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <memory>
 #include <string>
-#include <utility>
+#include <type_traits>
 #include <vector>
+#include <fcitx-utils/fcitxutils_export.h>
 #include <fcitx-utils/macros.h>
-#include "fcitxutils_export.h"
 
 namespace fcitx {
 
@@ -23,26 +30,24 @@ template <class Parent, class Member>
 inline std::ptrdiff_t
 offsetFromPointerToMember(const Member Parent::*ptr_to_member) {
     const Parent *const parent = 0;
-    const char *const member = static_cast<const char *>(
-        static_cast<const void *>(&(parent->*ptr_to_member)));
-    return std::ptrdiff_t(
-        member - static_cast<const char *>(static_cast<const void *>(parent)));
+    const char *const member =
+        reinterpret_cast<const char *>(&(parent->*ptr_to_member));
+    return std::ptrdiff_t(member - reinterpret_cast<const char *>(parent));
 }
 
 template <class Parent, class Member>
 inline Parent *parentFromMember(Member *member,
                                 const Member Parent::*ptr_to_member) {
-    return static_cast<Parent *>(
-        static_cast<void *>(static_cast<char *>(static_cast<void *>(member)) -
-                            offsetFromPointerToMember(ptr_to_member)));
+    return reinterpret_cast<Parent *>(reinterpret_cast<char *>(member) -
+                                      offsetFromPointerToMember(ptr_to_member));
 }
 
 template <class Parent, class Member>
 inline const Parent *parentFromMember(const Member *member,
                                       const Member Parent::*ptr_to_member) {
-    return static_cast<const Parent *>(static_cast<const void *>(
-        static_cast<const char *>(static_cast<const void *>(member)) -
-        offsetFromPointerToMember(ptr_to_member)));
+    return reinterpret_cast<const Parent *>(
+        reinterpret_cast<const char *>(member) -
+        offsetFromPointerToMember(ptr_to_member));
 }
 
 template <typename Iter>
@@ -97,11 +102,38 @@ IterRange<Iter> MakeIterRange(Iter begin, Iter end) {
 
 struct EnumHash {
     template <typename T>
-    inline auto operator()(T const value) const {
+    auto operator()(T const value) const {
         return std::hash<std::underlying_type_t<T>>()(
             static_cast<std::underlying_type_t<T>>(value));
     }
 };
+
+template <typename Callback>
+class [[nodiscard]] ScopeExit {
+public:
+    explicit ScopeExit(Callback callback) : callback_(std::move(callback)) {}
+
+    ScopeExit(ScopeExit &&) = delete;
+    ScopeExit(const ScopeExit &) = delete;
+    ScopeExit &operator=(const ScopeExit &) = delete;
+    ScopeExit &operator=(ScopeExit &&) = delete;
+
+    ~ScopeExit() noexcept { invoke(); }
+
+    void release() noexcept { callback_.reset(); }
+    void invoke() noexcept {
+        if (callback_) {
+            (*callback_)();
+            callback_.reset();
+        }
+    }
+
+private:
+    std::optional<Callback> callback_;
+};
+
+template <typename Callback>
+ScopeExit(Callback) -> ScopeExit<Callback>;
 
 FCITXUTILS_EXPORT void startProcess(const std::vector<std::string> &args,
                                     const std::string &workingDirectory = {});
@@ -130,8 +162,10 @@ inline auto makeUniqueCPtr(T *ptr) {
     return UniqueCPtr<T>(ptr);
 }
 
-FCITXUTILS_EXPORT ssize_t getline(UniqueCPtr<char> &lineptr, size_t *n,
-                                  std::FILE *stream);
+#ifndef _WIN32
+FCITXUTILS_DEPRECATED_EXPORT ssize_t getline(UniqueCPtr<char> &lineptr,
+                                             size_t *n, std::FILE *stream);
+#endif
 
 /**
  * Util function to check whether fcitx is running in flatpak.
@@ -148,7 +182,7 @@ FCITXUTILS_EXPORT bool isInFlatpak();
  *
  * @since 5.1.2
  */
-FCITXUTILS_EXPORT constexpr inline bool isAndroid() {
+constexpr bool isAndroid() {
 #if defined(ANDROID) || defined(__ANDROID__)
     return true;
 #else
@@ -161,8 +195,48 @@ FCITXUTILS_EXPORT constexpr inline bool isAndroid() {
  *
  * @since 5.1.7
  */
-FCITXUTILS_EXPORT constexpr inline bool isApple() {
+constexpr bool isApple() {
 #if defined(__APPLE__)
+    return true;
+#else
+    return false;
+#endif
+}
+
+/**
+ * Util function that returns whether it is compile against iOS (real device or
+ * simulator).
+ *
+ * @since 5.1.20
+ */
+constexpr bool isIOS() {
+#ifdef TARGET_OS_IPHONE
+    return TARGET_OS_IPHONE == 1;
+#else
+    return false;
+#endif
+}
+
+/**
+ * Util function that returns whether it is compile against emscripten.
+ *
+ * @since 5.1.12
+ */
+constexpr bool isEmscripten() {
+#if defined(__EMSCRIPTEN__)
+    return true;
+#else
+    return false;
+#endif
+}
+
+/**
+ * Util function that returns whether it is compile against Windows.
+ *
+ * @since 5.1.13
+ */
+constexpr bool isWindows() {
+#if defined(_WIN32)
     return true;
 #else
     return false;

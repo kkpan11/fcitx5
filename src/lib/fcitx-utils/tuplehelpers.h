@@ -50,9 +50,8 @@ struct MakeSequence<0, S...> {
 };
 
 template <typename... Args, typename F, int... S>
-auto callWithIndices(const F &func, Sequence<S...>,
+auto callWithIndices(const F &func, Sequence<S...> /*unused*/,
                      std::tuple<Args...> &tuple) {
-
     return func(std::get<S>(tuple)...);
 }
 

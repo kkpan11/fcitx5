@@ -7,16 +7,29 @@
 #ifndef _FCITX_UI_CLASSIC_THEME_H_
 #define _FCITX_UI_CLASSIC_THEME_H_
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <map>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
-#include <cairo/cairo.h>
+#include <cairo.h>
 #include "fcitx-config/configuration.h"
 #include "fcitx-config/enum.h"
 #include "fcitx-config/option.h"
+#include "fcitx-config/rawconfig.h"
+#include "fcitx-utils/color.h"
 #include "fcitx-utils/i18n.h"
+#include "fcitx-utils/i18nstring.h"
+#include "fcitx-utils/misc.h"
 #include "fcitx-utils/rect.h"
 #include "fcitx/icontheme.h"
+#include "common.h"
 
 namespace fcitx::classicui {
 enum class Gravity {
@@ -59,6 +72,31 @@ enum class ColorField {
     Menu_SelectedItemBorder,
     Menu_Separator,
 };
+
+template <typename T>
+struct OptionalFallbackMarshaller
+    : private DefaultMarshaller<std::optional<T>> {
+    using ParentMarshaller = DefaultMarshaller<std::optional<T>>;
+
+    void marshall(RawConfig &config, const std::optional<T> &value) const {
+        ParentMarshaller::marshall(config, value);
+        // Also clear legacy value.
+        config.setValue("");
+    }
+    bool unmarshall(std::optional<T> &value, const RawConfig &config,
+                    bool partial) const {
+        if (auto valueConfig = config.get("Value")) {
+            return ParentMarshaller::unmarshall(value, config, partial);
+        }
+        if (!config.value().empty()) {
+            value.emplace();
+            return unmarshallOption(*value, config, partial);
+        }
+        value.reset();
+        return true;
+    }
+};
+
 FCITX_CONFIG_ENUM_NAME_WITH_I18N(
     ColorField, N_("Input Panel Background"), N_("Input Panel Border"),
     N_("Input Panel Highlight Candidate Background"),
@@ -138,8 +176,24 @@ FCITX_CONFIGURATION(
                                            _("Highlight Background color"),
                                            Color("#a5a5a5ff")};
     Option<Color> highlightCandidateColor{this, "HighlightCandidateColor",
-                                          _("Highlight Candidate Color"),
+                                          _("Highlight Candidate Text Color"),
                                           Color("#ffffffff")};
+    Option<int, IntConstrain> labelTextSizeFactor{
+        this, "LabelTextSizeFactor", _("Candidate Label Text Size Factor"), 100,
+        IntConstrain(0, 400)};
+    Option<std::optional<Color>> candidateLabelColor{
+        this, "CandidateLabelColor", _("Candidate Label Text Color")};
+    Option<std::optional<Color>> highlightCandidateLabelColor{
+        this, "HighlightCandidateLabelColor",
+        _("Highlight Candidate Label Text Color")};
+    Option<int, IntConstrain> commentTextSizeFactor{
+        this, "CommentTextSizeFactor", _("Candidate Comment Text Size Factor"),
+        75, IntConstrain(0, 400)};
+    Option<std::optional<Color>> candidateCommentColor{
+        this, "CandidateCommentColor", _("Candidate Comment Text Color")};
+    Option<std::optional<Color>> highlightCandidateCommentColor{
+        this, "HighlightCandidateCommentColor",
+        _("Highlight Candidate Comment Text Color")};
     Option<bool> enableBlur{this, "EnableBlur", _("Enable Blur on KWin"),
                             false};
     Option<std::string> blurMask{this, "BlurMask", _("Blur mask"), ""};
@@ -172,6 +226,10 @@ FCITX_CONFIGURATION(
                                      _("Selected Item text color"),
                                      Color("#ffffffff")};
     Option<int> spacing{this, "Spacing", _("Spacing"), 0};
+    Option<bool> enableBlur{this, "EnableBlur", _("Enable Blur on KWin"),
+                            false};
+    Option<std::string> blurMask{this, "BlurMask", _("Blur mask"), ""};
+    Option<MarginConfig> blurMargin{this, "BlurMargin", _("Blur Margin")};
     Option<BackgroundImageConfig> background{this, "Background",
                                              _("Background")};
     Option<BackgroundImageConfig> highlight{this, "Highlight",
@@ -192,23 +250,65 @@ FCITX_CONFIGURATION(ThemeMetadata,
                     Option<I18NString> description{this, "Description",
                                                    _("Description")};)
 
-FCITX_CONFIGURATION(ThemeConfig,
-                    HiddenOption<ThemeMetadata> metadata{this, "Metadata",
-                                                         _("Metadata")};
-                    Option<InputPanelThemeConfig> inputPanel{this, "InputPanel",
-                                                             _("Input Panel")};
-                    Option<MenuThemeConfig> menu{this, "Menu", _("Menu")};
-                    Option<std::vector<ColorField>> accentColor{
-                        this, "AccentColorField", _("Accent Colors")};);
+FCITX_CONFIGURATION(
+    ThemeConfig,
+    HiddenOption<ThemeMetadata> metadata{this, "Metadata", _("Metadata")};
+    Option<std::optional<int>, OptionalConstrain<IntConstrain>,
+           OptionalFallbackMarshaller<int>>
+        supportedScale{this, "SupportedScale", _("Supported image scale"),
+                       std::nullopt, IntConstrain(1, 10)};
+    Option<InputPanelThemeConfig> inputPanel{this, "InputPanel",
+                                             _("Input Panel")};
+    Option<MenuThemeConfig> menu{this, "Menu", _("Menu")};
+    Option<std::vector<ColorField>> accentColor{this, "AccentColorField",
+                                                _("Accent Colors")};);
 
 class ClassicUI;
 class ClassicUIConfig;
+class Theme;
 
 class ThemeImage {
 public:
-    ThemeImage(const std::string &name, const BackgroundImageConfig &cfg,
+    using Pixmap = UniqueCPtr<cairo_surface_t, cairo_surface_destroy>;
+    using CairoPattern = UniqueCPtr<cairo_pattern_t, cairo_pattern_destroy>;
+    enum class TilePosition {
+        TopLeft,
+        Top,
+        TopRight,
+        Left,
+        Center,
+        Right,
+        BottomLeft,
+        Bottom,
+        BottomRight,
+    };
+    struct Svg {
+        int width = 0;
+        int height = 0;
+        CairoPattern pattern;
+    };
+    struct Pattern {
+        int width = 0;
+        int height = 0;
+        int borderWidth = 0;
+        CairoPattern pattern;
+    };
+    struct NineTiles {
+        struct Tile {
+            int width = 0;
+            int height = 0;
+            int sourceX = 0;
+            int sourceY = 0;
+            CairoPattern pattern;
+        };
+        int width = 0;
+        int height = 0;
+        std::array<Tile, 9> tiles;
+    };
+
+    ThemeImage(const Theme &theme, const BackgroundImageConfig &cfg,
                const Color &color, const Color &borderColor);
-    ThemeImage(const std::string &name, const ActionImageConfig &cfg);
+    ThemeImage(const Theme &theme, const ActionImageConfig &cfg);
     ThemeImage(const IconTheme &iconTheme, const std::string &icon,
                const std::string &label, uint32_t size,
                const ClassicUI *classicui);
@@ -216,49 +316,30 @@ public:
     static void drawTextIcon(cairo_surface_t *surface, const std::string &label,
                              uint32_t size, const ClassicUIConfig &config);
 
-    operator cairo_surface_t *() const { return image_.get(); }
-    auto height() const {
-        int height = 1;
-        if (image_) {
-            height = cairo_image_surface_get_height(image_.get());
-        }
-        return height <= 0 ? 1 : height;
-    }
-    auto width() const {
-        int width = 1;
-        if (image_) {
-            width = cairo_image_surface_get_width(image_.get());
-        }
-        return width <= 0 ? 1 : width;
-    }
+    auto height() const { return image_ ? image_->height : 0; }
+    auto width() const { return image_ ? image_->width : 0; }
 
     auto size() const { return size_; }
 
-    bool valid() const { return valid_; }
-    cairo_surface_t *overlay() const { return overlay_.get(); }
-    auto overlayWidth() const {
-        int width = 1;
-        if (overlay_) {
-            width = cairo_image_surface_get_width(overlay_.get());
-        }
-        return width <= 0 ? 1 : width;
-    }
-    auto overlayHeight() const {
-        int height = 1;
-        if (overlay_) {
-            height = cairo_image_surface_get_height(overlay_.get());
-        }
-        return height <= 0 ? 1 : height;
-    }
-    bool isImage() const { return isImage_; }
+    bool valid() const { return image_.has_value(); }
+    bool hasOverlay() const { return overlay_.has_value(); }
+    auto overlayWidth() const { return overlay_ ? overlay_->width : 0; }
+    auto overlayHeight() const { return overlay_ ? overlay_->height : 0; }
+    bool isPattern() const { return isPattern_; }
+    void paintRegion(cairo_t *c, TilePosition tile, double destX, double destY,
+                     double destWidth, double destHeight, double alpha = 1.0,
+                     bool overlay = false) const;
 
 private:
-    bool valid_ = false;
     std::string currentText_;
     uint32_t size_ = 0;
     bool isImage_ = false;
-    UniqueCPtr<cairo_surface_t, cairo_surface_destroy> image_;
-    UniqueCPtr<cairo_surface_t, cairo_surface_destroy> overlay_;
+
+    std::optional<NineTiles> image_;
+    std::optional<NineTiles::Tile> overlay_;
+    std::map<int, NineTiles> scaledImages_;
+    std::map<int, NineTiles::Tile> scaledOverlays_;
+    bool isPattern_ = false;
 };
 
 class Theme : public ThemeConfig {
@@ -266,7 +347,7 @@ public:
     Theme();
     ~Theme();
 
-    const std::string &name() { return name_; }
+    const std::string &name() const { return name_; }
     void load(std::string_view name);
     void load(std::string_view name, const RawConfig &rawConfig);
     const ThemeImage &loadImage(const std::string &icon,
@@ -275,8 +356,8 @@ public:
     const ThemeImage &loadBackground(const BackgroundImageConfig &cfg);
     const ThemeImage &loadAction(const ActionImageConfig &cfg);
 
-    void paint(cairo_t *c, const BackgroundImageConfig &cfg, int width,
-               int height, double alpha, double scale);
+    void paint(cairo_t *c, const BackgroundImageConfig &cfg, double dx,
+               double dy, double width, double height, double alpha);
 
     void paint(cairo_t *c, const ActionImageConfig &cfg, double alpha = 1.0);
 
@@ -306,6 +387,18 @@ public:
     const auto &inputPanelHighlightCandidateText() const {
         return inputPanelHighlightCandidateText_;
     }
+    const auto &inputPanelCandidateLabelText() const {
+        return inputPanelCandidateLabelText_;
+    }
+    const auto &inputPanelHighlightCandidateLabelText() const {
+        return inputPanelHighlightCandidateLabelText_;
+    }
+    const auto &inputPanelCandidateCommentText() const {
+        return inputPanelCandidateCommentText_;
+    }
+    const auto &inputPanelHighlightCandidateCommentText() const {
+        return inputPanelHighlightCandidateCommentText_;
+    }
 
     const auto &menuBackground() const { return menuBackground_; }
     const auto &menuBorder() const { return menuBorder_; }
@@ -318,6 +411,11 @@ public:
     const auto &menuSeparator() const { return menuSeparator_; }
     const auto &menuText() const { return menuText_; }
     const auto &menuSelectedItemText() const { return menuSelectedItemText_; }
+    const auto &menuBlurMaskConfig() const { return menuBlurMaskConfig_; }
+
+    bool isSystemTheme() const { return isSystemTheme_; }
+
+    static bool isSystemThemeName(std::string_view themeName);
 
 private:
     void reset();
@@ -329,6 +427,7 @@ private:
     IconTheme iconTheme_;
     std::string name_;
     BackgroundImageConfig maskConfig_;
+    BackgroundImageConfig menuBlurMaskConfig_;
     std::unordered_set<ColorField> accentColorFields_;
 
     Color inputPanelBackground_;
@@ -340,6 +439,11 @@ private:
     Color inputPanelHighlightText_;
     Color inputPanelHighlightCandidateText_;
 
+    Color inputPanelCandidateLabelText_;
+    Color inputPanelHighlightCandidateLabelText_;
+    Color inputPanelCandidateCommentText_;
+    Color inputPanelHighlightCandidateCommentText_;
+
     Color menuBackground_;
     Color menuBorder_;
     Color menuSelectedItemBackground_;
@@ -347,6 +451,8 @@ private:
     Color menuSeparator_;
     Color menuText_;
     Color menuSelectedItemText_;
+
+    bool isSystemTheme_ = false;
 };
 
 inline void cairoSetSourceColor(cairo_t *cr, const Color &color) {
@@ -357,12 +463,8 @@ inline void cairoSetSourceColor(cairo_t *cr, const Color &color) {
 inline void shrink(Rect &rect, const MarginConfig &margin) {
     int newWidth = rect.width() - *margin.marginLeft - *margin.marginRight;
     int newHeight = rect.height() - *margin.marginTop - *margin.marginBottom;
-    if (newWidth < 0) {
-        newWidth = 0;
-    }
-    if (newHeight < 0) {
-        newHeight = 0;
-    }
+    newWidth = std::max(newWidth, 0);
+    newHeight = std::max(newHeight, 0);
     rect.setPosition(rect.left() + *margin.marginLeft,
                      rect.top() + *margin.marginTop);
     rect.setSize(newWidth, newHeight);

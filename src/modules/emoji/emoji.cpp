@@ -6,14 +6,25 @@
  */
 #include "emoji.h"
 #include <sys/stat.h>
+#include <algorithm>
+#include <cstdint>
 #include <functional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 #include <zlib.h>
 #include "fcitx-utils/charutils.h"
+#include "fcitx-utils/fs.h"
+#include "fcitx-utils/log.h"
 #include "fcitx-utils/misc_p.h"
-#include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/standardpaths.h"
 #include "fcitx-utils/stringutils.h"
 #include "fcitx-utils/utf8.h"
 #include "fcitx/addonfactory.h"
+#include "fcitx/addoninstance.h"
 
 namespace fcitx {
 
@@ -149,7 +160,7 @@ void Emoji::prefix(
     auto start = emojiMap->lower_bound(key);
     auto end = emojiMap->end();
     for (; start != end; start++) {
-        if (!stringutils::startsWith(start->first, key)) {
+        if (!start->first.starts_with(key)) {
             break;
         }
         if (!collector(start->first, start->second)) {
@@ -160,7 +171,7 @@ void Emoji::prefix(
 
 namespace {
 bool noSpace(std::string_view str) {
-    return std::any_of(str.begin(), str.end(), charutils::isspace);
+    return std::ranges::any_of(str, charutils::isspace);
 }
 } // namespace
 
@@ -212,9 +223,9 @@ const EmojiMap *Emoji::loadEmoji(const std::string &language,
                               return utf8::lengthValidated(str) > 2;
                           }}};
         const auto *filter = findValue(filterMap, lang);
-        const auto file = StandardPath::global().open(
-            StandardPath::Type::PkgData,
-            stringutils::concat("emoji/data/", lang, ".dict"), O_RDONLY);
+        const auto file = StandardPaths::global().open(
+            StandardPathsType::PkgData,
+            stringutils::concat("emoji/data/", lang, ".dict"));
         EmojiParser parser(filter ? *filter : nullptr);
         if (file.isValid() && parser.load(file.fd())) {
             emojiMap = &(langToEmojiMap_[lang] = std::move(parser.emojiMap_));
@@ -236,9 +247,11 @@ const EmojiMap *Emoji::loadEmoji(const std::string &language,
 }
 
 class EmojiModuleFactory : public AddonFactory {
-    AddonInstance *create(AddonManager *) override { return new Emoji; }
+    AddonInstance *create(AddonManager * /*manager*/) override {
+        return new Emoji;
+    }
 };
 
 } // namespace fcitx
 
-FCITX_ADDON_FACTORY(fcitx::EmojiModuleFactory);
+FCITX_ADDON_FACTORY_V2(emoji, fcitx::EmojiModuleFactory);

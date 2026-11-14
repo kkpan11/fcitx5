@@ -7,13 +7,16 @@
 #ifndef _FCITX_UTILS_DBUS_OBJECTVTABLE_H_
 #define _FCITX_UTILS_DBUS_OBJECTVTABLE_H_
 
+#include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <stdexcept>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <fcitx-utils/dbus/message.h>
+#include <fcitx-utils/fcitxutils_export.h>
 #include <fcitx-utils/flags.h>
 #include <fcitx-utils/macros.h>
 #include <fcitx-utils/trackableobject.h>
@@ -23,18 +26,17 @@
 /// \file
 /// \brief High level API for dbus objects.
 
-namespace fcitx {
-namespace dbus {
+namespace fcitx::dbus {
 class Message;
 class ObjectVTableBase;
 class Slot;
 class Bus;
 class ObjectVTablePrivate;
 
-typedef std::function<bool(Message)> ObjectMethod;
-typedef std::function<bool(Message, const ObjectMethod &)> ObjectMethodClosure;
-typedef std::function<void(Message &)> PropertyGetMethod;
-typedef std::function<bool(Message &)> PropertySetMethod;
+using ObjectMethod = std::function<bool(Message)>;
+using ObjectMethodClosure = std::function<bool(Message, const ObjectMethod &)>;
+using PropertyGetMethod = std::function<void(Message &)>;
+using PropertySetMethod = std::function<bool(Message &)>;
 
 /**
  * An exception if you want message to return a DBus error.
@@ -59,6 +61,26 @@ public:
 private:
     std::string name_;
     std::string error_;
+};
+
+/**
+ * An exception to not reply a the D-Bus method call.
+ *
+ * This can be useful if there is a cascade of method calls and you want to
+ * reply later.
+ */
+class FCITXUTILS_EXPORT MethodCallNoReply : public std::exception {
+public:
+    explicit MethodCallNoReply();
+
+    const char *what() const noexcept override { return "MethodCallNoReply"; }
+};
+
+class FCITXUTILS_EXPORT MethodReturnTypeMismatch : public std::exception {
+public:
+    explicit MethodReturnTypeMismatch();
+
+    const char *what() const noexcept override;
 };
 
 class ObjectVTableMethodPrivate;
@@ -101,7 +123,7 @@ private:
 
 template <typename T>
 struct ReturnValueHelper {
-    typedef T type;
+    using type = T;
     type ret;
 
     template <typename U>
@@ -112,7 +134,7 @@ struct ReturnValueHelper {
 
 template <>
 struct ReturnValueHelper<void> {
-    typedef std::tuple<> type;
+    using type = std::tuple<>;
     type ret;
     template <typename U>
     void call(U u) {
@@ -160,7 +182,7 @@ struct ReturnValueHelper<void> {
 #define FCITX_OBJECT_VTABLE_SIGNAL(SIGNAL, SIGNAL_NAME, SIGNATURE)             \
     ::fcitx::dbus::ObjectVTableSignal SIGNAL##Signal{this, SIGNAL_NAME,        \
                                                      SIGNATURE};               \
-    typedef FCITX_STRING_TO_DBUS_TUPLE(SIGNATURE) SIGNAL##ArgType;             \
+    using SIGNAL##ArgType = FCITX_STRING_TO_DBUS_TUPLE(SIGNATURE);             \
     template <typename... Args>                                                \
     void SIGNAL(Args &&...args) {                                              \
         auto msg = SIGNAL##Signal.createSignal();                              \
@@ -408,7 +430,7 @@ public:
         Args args;
         msg >> args;
         try {
-            typedef decltype(callWithTuple(callback_, args)) ReturnType;
+            using ReturnType = decltype(callWithTuple(callback_, args));
             static_assert(std::is_same<Ret, ReturnType>::value,
                           "Return type does not match.");
             ReturnValueHelper<ReturnType> helper;
@@ -417,9 +439,11 @@ public:
             auto reply = msg.createReply();
             reply << helper.ret;
             reply.send();
-        } catch (const ::fcitx::dbus::MethodCallError &error) {
+        } catch (const MethodCallError &error) {
             auto reply = msg.createError(error.name(), error.what());
             reply.send();
+        } catch (
+            const MethodCallNoReply &noReply) { // NOLINT(bugprone-empty-catch)
         }
         if (watcher.isValid()) {
             watcher.get()->setCurrentMessage(nullptr);
@@ -502,7 +526,6 @@ auto makeObjectVTablePropertySetMethodAdaptor(ObjectVTableBase *base,
         base, std::forward<Callback>(callback));
 }
 
-} // namespace dbus
-} // namespace fcitx
+} // namespace fcitx::dbus
 
 #endif // _FCITX_UTILS_DBUS_OBJECTVTABLE_H_

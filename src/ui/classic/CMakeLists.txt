@@ -13,7 +13,7 @@ if (WAYLAND_FOUND)
         Fcitx5::Module::Wayland Fcitx5::Module::WaylandIM Wayland::Client Fcitx5::Wayland::Core
         Wayland::Cursor
         Fcitx5::Wayland::InputMethod Fcitx5::Wayland::InputMethodV2
-        Fcitx5::Wayland::Blur
+        Fcitx5::Wayland::ExtBackgroundEffect
         Fcitx5::Wayland::FractionalScale Fcitx5::Wayland::Viewporter
         Fcitx5::Wayland::CursorShape)
 else()
@@ -31,7 +31,7 @@ if (ENABLE_DBUS)
     set(CLASSICUI_LIBS ${CLASSICUI_LIBS} Fcitx5::Module::DBus)
 endif()
 
-add_library(classicui MODULE
+add_fcitx5_addon(classicui
     classicui.cpp window.cpp theme.cpp inputwindow.cpp plasmathemewatchdog.cpp colorhelper.cpp ${CLASSICUI_SRCS}
     )
 
@@ -42,10 +42,11 @@ endif()
 target_link_libraries(classicui
     Fcitx5::Core
     PkgConfig::Cairo PkgConfig::Pango
-    PkgConfig::GdkPixbuf PkgConfig::GioUnix
+    PkgConfig::GdkPixbuf PkgConfig::Rsvg PkgConfig::GioUnix
     Fcitx5::Module::NotificationItem
+    ${YOGA_TARGET}
     ${CLASSICUI_LIBS}
-    ${FMT_TARGET})
+   )
 
 install(TARGETS classicui DESTINATION "${FCITX_INSTALL_ADDONDIR}")
 configure_file(classicui.conf.in.in classicui.conf.in @ONLY)

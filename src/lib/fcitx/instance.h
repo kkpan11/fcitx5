@@ -7,13 +7,21 @@
 #ifndef _FCITX_INSTANCE_H_
 #define _FCITX_INSTANCE_H_
 
+#include <cstdint>
+#include <exception>
 #include <memory>
+#include <optional>
+#include <string>
+#include <tuple>
+#include <utility>
 #include <fcitx-utils/connectableobject.h>
+#include <fcitx-utils/eventdispatcher.h>
+#include <fcitx-utils/handlertable.h>
 #include <fcitx-utils/macros.h>
 #include <fcitx/event.h>
+#include <fcitx/fcitxcore_export.h>
 #include <fcitx/globalconfig.h>
 #include <fcitx/text.h>
-#include "fcitxcore_export.h"
 
 #define FCITX_INVALID_COMPOSE_RESULT 0xffffffff
 
@@ -27,6 +35,7 @@ class InputContextManager;
 class InputMethodManager;
 class InputMethodEngine;
 class InputMethodEntry;
+class TempModeManager;
 class UserInterfaceManager;
 class GlobalConfig;
 class FocusGroup;
@@ -154,6 +163,15 @@ public:
     /// Get the fcitx event loop.
     EventLoop &eventLoop();
 
+    /**
+     * Return a shared event dispatcher that is already attached to instance's
+     * event loop.
+     *
+     * @return shared event dispatcher.
+     * @since 5.1.9
+     */
+    EventDispatcher &eventDispatcher();
+
     /// Get the addon manager.
     AddonManager &addonManager();
 
@@ -168,6 +186,9 @@ public:
 
     /// Get the input method manager
     const InputMethodManager &inputMethodManager() const;
+
+    /// Get the temporary mode manager.
+    TempModeManager &tempModeManager();
 
     /// Get the global config.
     GlobalConfig &globalConfig();
@@ -196,6 +217,16 @@ public:
      */
     FCITX_NODISCARD std::unique_ptr<HandlerTableEntry<EventHandler>>
     watchEvent(EventType type, EventWatcherPhase phase, EventHandler callback);
+
+    template <EventType T, typename Callback>
+    FCITX_NODISCARD std::unique_ptr<HandlerTableEntry<EventHandler>>
+    watchEvent(EventWatcherPhase phase, Callback &&callback) {
+        return watchEvent(T, phase,
+                          [callback = std::forward<Callback>(callback)](
+                              Event &event) mutable {
+                              callback(static_cast<EventFor<T> &>(event));
+                          });
+    }
 
     /// Return the unique name of input method for given input context.
     std::string inputMethod(InputContext *ic);
@@ -301,6 +332,13 @@ public:
                          void(InputContext *inputContext, Text &orig));
     FCITX_DECLARE_SIGNAL(Instance, KeyEventResult,
                          void(const KeyEvent &keyEvent));
+    FCITX_DECLARE_SIGNAL(Instance, AboutToExit, void());
+    FCITX_DECLARE_SIGNAL(Instance, Exit, void());
+    FCITX_DECLARE_SIGNAL(
+        Instance, XkbStateMaskChanged,
+        void(const std::string &display,
+             std::optional<std::tuple<uint32_t, uint32_t, uint32_t>> oldMask,
+             std::optional<std::tuple<uint32_t, uint32_t, uint32_t>> newMask));
     /**
      * \deprecated
      */
@@ -428,15 +466,48 @@ public:
     void clearXkbStateMask(const std::string &display);
 
     /**
+     * Return xkb state mask for given display
+     *
+     * @see Instance::updateXkbStateMask
+     * @see Instance::clearXkbStateMask
+     * @see InputContext::display
+     * @param display display name
+     * @since 5.1.22
+     */
+    std::optional<std::tuple<uint32_t, uint32_t, uint32_t>>
+    xkbStateMask(const std::string &display) const;
+
+    /**
      * Show a small popup with input popup window with current input method
      * information.
+     *
+     * The popup will be hidden after certain amount of time.
      *
      * This is useful for input method that has multiple sub modes. It can be
      * called with switching sub modes within the input method.
      *
+     * The behavior is controlled by global config.
+     *
      * @param ic input context.
      */
     void showInputMethodInformation(InputContext *ic);
+
+    /**
+     * Show a small popup with input popup window with current input method
+     * information.
+     *
+     * The popup will be hidden after certain amount of time. The popup will
+     * always be displayed, regardless of the showInputMethodInformation in
+     * global config.
+     *
+     * This is useful for input method that has internal switches.
+     *
+     * @param ic input context.
+     * @param message message string to be displayed
+     * @since 5.1.11
+     */
+    void showCustomInputMethodInformation(InputContext *ic,
+                                          const std::string &message);
 
     /**
      * Check if need to invoke Instance::refresh.

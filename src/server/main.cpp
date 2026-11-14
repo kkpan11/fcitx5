@@ -5,60 +5,52 @@
  *
  */
 
-#include <locale.h>
 #include <sys/stat.h>
+#include <clocale>
+#include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <iostream>
-#include "fcitx-utils/fs.h"
+#include <string>
+#include <vector>
+#include "fcitx-utils/environ.h"
+#include "fcitx-utils/log.h"
 #include "fcitx-utils/misc.h"
 #include "fcitx-utils/misc_p.h"
+#include "fcitx-utils/semver.h"
 #include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/standardpaths.h"
 #include "fcitx/addonfactory.h"
+#include "fcitx/addoninstance.h"
+#include "fcitx/addonloader.h"
 #include "fcitx/addonmanager.h"
 #include "fcitx/instance.h"
 #include "errorhandler.h"
 
-#ifdef ENABLE_KEYBOARD
-#include "keyboard.h"
-#endif
-
 using namespace fcitx;
-int selfpipe[2];
-std::string crashlog;
 
+FCITX_DEFINE_STATIC_ADDON_REGISTRY(getStaticAddon)
 #ifdef ENABLE_KEYBOARD
-static KeyboardEngineFactory keyboardFactory;
+FCITX_IMPORT_ADDON_FACTORY(getStaticAddon, keyboard);
 #endif
-
-StaticAddonRegistry staticAddon = {
-#ifdef ENABLE_KEYBOARD
-    std::make_pair<std::string, AddonFactory *>("keyboard", &keyboardFactory)
-#endif
-};
 
 int main(int argc, char *argv[]) {
     umask(077);
     StandardPath::global().syncUmask();
-    if (safePipe(selfpipe) < 0) {
+    StandardPaths::global().syncUmask();
+    int selfPipe[2];
+    if (safePipe(selfPipe) < 0) {
         fprintf(stderr, "Could not create self-pipe.\n");
         return 1;
     }
 
-    auto *home = getenv("HOME");
-    if (!home || home[0] == '\0') {
+    auto home = getEnvironment("HOME");
+    if (!home || home->empty()) {
         fprintf(stderr, "Please set HOME.\n");
         return 1;
     }
 
-    auto userDir =
-        StandardPath::global().userDirectory(StandardPath::Type::PkgConfig);
-    if (!userDir.empty()) {
-        if (fs::makePath(userDir)) {
-            crashlog = stringutils::joinPath(userDir, "crash.log");
-        }
-    }
-
-    SetMyExceptionHandler();
+    SetMyExceptionHandler(selfPipe[1]);
 
     setlocale(LC_ALL, "");
 
@@ -67,18 +59,17 @@ int main(int argc, char *argv[]) {
     bool restart = false;
     bool canRestart = false;
     try {
-        FCITX_LOG_IF(Info, isInFlatpak()) << "Running inside flatpak.";
         Instance instance(argc, argv);
         instance.setBinaryMode();
-        instance.setSignalPipe(selfpipe[0]);
-        instance.addonManager().registerDefaultLoader(&staticAddon);
+        instance.setSignalPipe(selfPipe[0]);
+        instance.addonManager().registerDefaultLoader(&getStaticAddon());
 
         ret = instance.exec();
         restart = instance.isRestartRequested();
         canRestart = instance.canRestart();
     } catch (const InstanceQuietQuit &) {
     } catch (const std::exception &e) {
-        std::cerr << "Received exception: " << e.what() << std::endl;
+        std::cerr << "Received exception: " << e.what() << '\n';
         return 1;
     }
 
@@ -86,9 +77,11 @@ int main(int argc, char *argv[]) {
         std::vector<std::string> args;
         if (isInFlatpak()) {
             args = {"flatpak-spawn",
-                    StandardPath::fcitxPath("bindir", "fcitx5"), "-rd"};
+                    StandardPaths::fcitxPath("bindir", "fcitx5").string(),
+                    "-rd"};
         } else {
-            args = {StandardPath::fcitxPath("bindir", "fcitx5"), "-r"};
+            args = {StandardPaths::fcitxPath("bindir", "fcitx5").string(),
+                    "-r"};
         }
         startProcess(args);
     }

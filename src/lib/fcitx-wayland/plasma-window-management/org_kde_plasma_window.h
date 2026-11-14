@@ -1,18 +1,23 @@
-#ifndef ORG_KDE_PLASMA_WINDOW
-#define ORG_KDE_PLASMA_WINDOW
+#ifndef ORG_KDE_PLASMA_WINDOW_H_
+#define ORG_KDE_PLASMA_WINDOW_H_
+#include <cstdint>
 #include <wayland-client.h>
+#include <wayland-util.h>
+#include "fcitx-utils/misc.h"
 #include "fcitx-utils/signals.h"
-#include "wayland-plasma-window-management-client-protocol.h"
+#include "wayland-plasma-window-management-client-protocol.h" // IWYU pragma: export
 namespace fcitx::wayland {
+
 class WlOutput;
 class WlSurface;
+
 class OrgKdePlasmaWindow final {
 public:
     static constexpr const char *interface = "org_kde_plasma_window";
     static constexpr const wl_interface *const wlInterface =
         &org_kde_plasma_window_interface;
-    static constexpr const uint32_t version = 16;
-    typedef org_kde_plasma_window wlType;
+    static constexpr const uint32_t version = 20;
+    using wlType = org_kde_plasma_window;
     operator org_kde_plasma_window *() { return data_.get(); }
     OrgKdePlasmaWindow(wlType *data);
     OrgKdePlasmaWindow(OrgKdePlasmaWindow &&other) noexcept = delete;
@@ -35,6 +40,7 @@ public:
     void requestEnterActivity(const char *id);
     void requestLeaveActivity(const char *id);
     void sendToOutput(WlOutput *output);
+
     auto &titleChanged() { return titleChangedSignal_; }
     auto &appIdChanged() { return appIdChangedSignal_; }
     auto &stateChanged() { return stateChangedSignal_; }
@@ -52,6 +58,7 @@ public:
     auto &activityEntered() { return activityEnteredSignal_; }
     auto &activityLeft() { return activityLeftSignal_; }
     auto &resourceNameChanged() { return resourceNameChangedSignal_; }
+    auto &clientGeometry() { return clientGeometrySignal_; }
 
 private:
     static void destructor(org_kde_plasma_window *);
@@ -73,6 +80,9 @@ private:
     fcitx::Signal<void(const char *)> activityEnteredSignal_;
     fcitx::Signal<void(const char *)> activityLeftSignal_;
     fcitx::Signal<void(const char *)> resourceNameChangedSignal_;
+    fcitx::Signal<void(int32_t, int32_t, uint32_t, uint32_t)>
+        clientGeometrySignal_;
+
     uint32_t version_;
     void *userData_ = nullptr;
     UniqueCPtr<org_kde_plasma_window, &destructor> data_;
@@ -80,5 +90,7 @@ private:
 static inline org_kde_plasma_window *rawPointer(OrgKdePlasmaWindow *p) {
     return p ? static_cast<org_kde_plasma_window *>(*p) : nullptr;
 }
+
 } // namespace fcitx::wayland
-#endif
+
+#endif // ORG_KDE_PLASMA_WINDOW_H_

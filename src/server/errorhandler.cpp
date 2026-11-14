@@ -6,16 +6,19 @@
  *
  */
 
-#include "config.h"
-
-#include <fcntl.h>
-#include <signal.h>
-#include <string.h>
-#include <time.h>
-#include <unistd.h>
-
-#include "fcitx-utils/fs.h"
 #include "errorhandler.h"
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <csignal>
+#include <cstdint>
+#include <cstring>
+#include <ctime>
+#include <filesystem>
+#include "fcitx-utils/fs.h"
+#include "fcitx-utils/standardpaths.h"
+#include "fcitx-utils/unixfd.h"
+#include "config.h"
 
 #if defined(EXECINFO_FOUND)
 #include <execinfo.h>
@@ -28,15 +31,30 @@
 #define MINIMAL_BUFFER_SIZE 256
 #define BACKTRACE_SIZE 32
 
-extern int selfpipe[2];
-extern std::string crashlog;
+namespace fcitx {
 
-typedef struct _MinimalBuffer {
+static int signalPipe;
+static std::filesystem::path crashlog;
+
+struct MinimalBuffer {
     char buffer[MINIMAL_BUFFER_SIZE];
     int offset;
-} MinimalBuffer;
+};
 
-void SetMyExceptionHandler(void) {
+static void OnException(int signo);
+
+void SetMyExceptionHandler(int pipeFd) {
+
+    auto userDir =
+        StandardPaths::global().userDirectory(StandardPathsType::PkgConfig);
+    if (!userDir.empty()) {
+        if (fs::makePath(userDir)) {
+            crashlog = userDir / "crash.log";
+        }
+    }
+
+    signalPipe = pipeFd;
+
     int signo;
 
     for (signo = SIGHUP; signo < SIGUNUSED; signo++) {
@@ -111,38 +129,43 @@ static inline void _write_buffer(int fd, const MinimalBuffer *buffer) {
 
 void OnException(int signo) {
     if (signo == SIGCHLD) {
+        uint8_t sig = (signo & 0xff);
+        fcitx::fs::safeWrite(signalPipe, &sig, 1);
+        signal(signo, OnException);
         return;
     }
 
     MinimalBuffer buffer;
-    int fd = -1;
+    fcitx::UnixFD fd;
 
     if (!crashlog.empty() && (signo == SIGSEGV || signo == SIGABRT)) {
-        fd = open(crashlog.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        fd = fcitx::StandardPaths::openPath(crashlog,
+                                            O_WRONLY | O_CREAT | O_TRUNC, 0600);
     }
 
     /* print signal info */
     BufferReset(&buffer);
     BufferAppendUInt64(&buffer, signo, 10);
-    _write_string(fd, "=========================\n");
-    _write_string(fd, "Fcitx " FCITX_VERSION_STRING " -- Get Signal No.: ");
-    _write_buffer(fd, &buffer);
-    _write_string(fd, "\n");
+    _write_string(fd.fd(), "=========================\n");
+    _write_string(fd.fd(),
+                  "Fcitx " FCITX_VERSION_STRING " -- Get Signal No.: ");
+    _write_buffer(fd.fd(), &buffer);
+    _write_string(fd.fd(), "\n");
 
     /* print time info */
     time_t t = time(nullptr);
     BufferReset(&buffer);
     BufferAppendUInt64(&buffer, t, 10);
-    _write_string(fd, "Date: try \"date -d @");
-    _write_buffer(fd, &buffer);
-    _write_string(fd, "\" if you are using GNU date ***\n");
+    _write_string(fd.fd(), "Date: try \"date -d @");
+    _write_buffer(fd.fd(), &buffer);
+    _write_string(fd.fd(), "\" if you are using GNU date ***\n");
 
     /* print process info */
     BufferReset(&buffer);
     BufferAppendUInt64(&buffer, getpid(), 10);
-    _write_string(fd, "ProcessID: ");
-    _write_buffer(fd, &buffer);
-    _write_string(fd, "\n");
+    _write_string(fd.fd(), "ProcessID: ");
+    _write_buffer(fd.fd(), &buffer);
+    _write_string(fd.fd(), "\n");
 
 #if defined(EXECINFO_FOUND)
     void *array[BACKTRACE_SIZE] = {
@@ -151,14 +174,12 @@ void OnException(int signo) {
 
     int size = backtrace(array, BACKTRACE_SIZE);
     backtrace_symbols_fd(array, size, STDERR_FILENO);
-    if (fd >= 0) {
-        backtrace_symbols_fd(array, size, fd);
+    if (fd.isValid()) {
+        backtrace_symbols_fd(array, size, fd.fd());
     }
 #endif
 
-    if (fd >= 0) {
-        close(fd);
-    }
+    fd.reset();
 
     switch (signo) {
     case SIGABRT:
@@ -174,10 +195,12 @@ void OnException(int signo) {
         if (signo < 0xff) {
             sig = (uint8_t)(signo & 0xff);
         }
-        fcitx::fs::safeWrite(selfpipe[1], &sig, 1);
+        fcitx::fs::safeWrite(signalPipe, &sig, 1);
         signal(signo, OnException);
     } break;
     }
 }
+
+} // namespace fcitx
 
 // kate: indent-mode cstyle; space-indent on; indent-width 0;

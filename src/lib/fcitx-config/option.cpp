@@ -6,8 +6,13 @@
  */
 
 #include "option.h"
+#include <memory>
+#include <regex>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include "configuration.h"
+#include "rawconfig.h"
 
 namespace fcitx {
 
@@ -50,14 +55,19 @@ std::string ExternalOption::typeString() const { return "External"; }
 void ExternalOption::reset() {}
 bool ExternalOption::isDefault() const { return false; }
 
-void ExternalOption::marshall(RawConfig &) const {}
-bool ExternalOption::unmarshall(const RawConfig &, bool) { return true; }
+void ExternalOption::marshall(RawConfig & /*config*/) const {}
+bool ExternalOption::unmarshall(const RawConfig & /*config*/,
+                                bool /*partial*/) {
+    return true;
+}
 std::unique_ptr<Configuration> ExternalOption::subConfigSkeleton() const {
     return nullptr;
 }
 
-bool ExternalOption::equalTo(const OptionBase &) const { return true; }
-void ExternalOption::copyFrom(const OptionBase &) {}
+bool ExternalOption::equalTo(const OptionBase & /*other*/) const {
+    return true;
+}
+void ExternalOption::copyFrom(const OptionBase & /*other*/) {}
 
 bool ExternalOption::skipDescription() const { return false; }
 bool ExternalOption::skipSave() const { return true; }
@@ -71,5 +81,18 @@ void ExternalOption::dumpDescription(RawConfig &config) const {
 void SubConfigOption::dumpDescription(RawConfig &config) const {
     ExternalOption::dumpDescription(config);
     config.setValueByPath("LaunchSubConfig", "True");
+}
+
+bool RegexConstrain::check(const std::string &value) const {
+    try {
+        std::regex re(value);
+    } catch (const std::regex_error &) {
+        return false;
+    }
+    return true;
+}
+
+void RegexConstrain::dumpDescription(RawConfig &config) const {
+    config.setValueByPath("IsRegex", "True");
 }
 } // namespace fcitx

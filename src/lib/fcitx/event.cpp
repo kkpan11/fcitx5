@@ -6,6 +6,14 @@
  */
 
 #include "event.h"
+#include <algorithm>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <span>
+#include "fcitx-utils/key.h"
+#include "fcitx-utils/keysym.h"
+#include "fcitx-utils/macros.h"
 
 namespace fcitx {
 
@@ -20,7 +28,7 @@ public:
     uint64_t userAction_ = 0;
     std::string text_;
     bool isLongPress_ = false;
-    float x_ = 0.0f, y_ = 0.0f;
+    float x_ = 0.0F, y_ = 0.0F;
 };
 
 Event::~Event() {}
@@ -29,6 +37,39 @@ KeyEventBase::KeyEventBase(EventType type, InputContext *context, Key rawKey,
                            bool isRelease, int time)
     : InputContextEvent(context, type), key_(rawKey.normalize()),
       origKey_(rawKey), rawKey_(rawKey), isRelease_(isRelease), time_(time) {}
+
+bool KeyEventBase::check(const Key &key, KeyEventMatchingModes modes) const {
+    if (modes.test(KeyEventMatchingMode::MatchNormalizedKey) && !key.code() &&
+        key_.check(key)) {
+        return true;
+    }
+
+    if ((modes.test(KeyEventMatchingMode::MatchRawKey) ||
+         (modes.test(KeyEventMatchingMode::MatchNormalizedKey) &&
+          key.code())) &&
+        rawKey_.check(key)) {
+        return true;
+    }
+
+    if ((modes.test(KeyEventMatchingMode::MatchOrigKey) ||
+         (modes.test(KeyEventMatchingMode::MatchNormalizedOrigKey) &&
+          key.code())) &&
+        origKey_.check(key)) {
+        return true;
+    }
+
+    if (modes.test(KeyEventMatchingMode::MatchNormalizedOrigKey) &&
+        !key.code() && origKey_.normalize().check(key)) {
+        return true;
+    }
+    return false;
+}
+
+bool KeyEventBase::checkKeyList(std::span<const Key> keys,
+                                KeyEventMatchingModes mode) const {
+    return std::ranges::any_of(
+        keys, [this, mode](const Key &key) { return check(key, mode); });
+}
 
 VirtualKeyboardEvent::VirtualKeyboardEvent(InputContext *context,
                                            bool isRelease, int time)

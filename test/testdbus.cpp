@@ -5,14 +5,30 @@
  *
  */
 
+#include <cstdint>
+#include <memory>
+#include <stdexcept>
+#include <string>
 #include <thread>
+#include <tuple>
+#include <utility>
+#include <vector>
+#include "fcitx-utils/coroutine.h"
 #include "fcitx-utils/dbus/bus.h"
+#include "fcitx-utils/dbus/coroutine.h"
+#include "fcitx-utils/dbus/matchrule.h"
+#include "fcitx-utils/dbus/message.h"
+#include "fcitx-utils/dbus/objectvtable.h"
 #include "fcitx-utils/dbus/variant.h"
 #include "fcitx-utils/event.h"
+#include "fcitx-utils/eventdispatcher.h"
+#include "fcitx-utils/eventloopinterface.h"
 #include "fcitx-utils/log.h"
 
 using namespace fcitx::dbus;
 using namespace fcitx;
+
+namespace {
 
 class TestObject : public ObjectVTable<TestObject> {
     void test1() {}
@@ -214,18 +230,15 @@ void client() {
     loop.exec();
 }
 
-int main() {
+void test_client() {
     Bus bus(BusType::Session);
-    if (!bus.isOpen()) {
-        return 1;
-    }
+    FCITX_ASSERT(bus.isOpen());
     EventLoop loop;
     bus.attachEventLoop(&loop);
     FCITX_ASSERT(&loop == bus.eventLoop());
-    if (!bus.requestName(TEST_SERVICE, {RequestNameFlag::AllowReplacement,
-                                        RequestNameFlag::ReplaceExisting})) {
-        return 1;
-    }
+    FCITX_ASSERT(
+        bus.requestName(TEST_SERVICE, {RequestNameFlag::AllowReplacement,
+                                       RequestNameFlag::ReplaceExisting}));
     TestObject obj;
     FCITX_ASSERT(bus.addObjectVTable("/test", TEST_INTERFACE, obj));
     std::unique_ptr<EventSourceTime> s(loop.addTimeEvent(
@@ -240,6 +253,122 @@ int main() {
             loop.exit();
             return false;
         }));
+
+    std::thread thread(client);
+
+    loop.exec();
+
+    thread.join();
+}
+
+void test_coroutine() {
+    Bus bus(BusType::Session);
+    FCITX_ASSERT(bus.isOpen());
+    EventLoop loop;
+    bus.attachEventLoop(&loop);
+
+    FCITX_ASSERT(&loop == bus.eventLoop());
+    FCITX_ASSERT(
+        bus.requestName(TEST_SERVICE, {RequestNameFlag::AllowReplacement,
+                                       RequestNameFlag::ReplaceExisting}));
+    TestObject obj;
+    FCITX_ASSERT(bus.addObjectVTable("/test", TEST_INTERFACE, obj));
+    EventDispatcher dispatcher;
+    dispatcher.attach(&loop);
+    sendToEventDispatcherDetached(
+        &dispatcher, [](dbus::Bus &bus) -> Coroutine<void> {
+            auto msg = bus.createMethodCall(TEST_SERVICE, "/test",
+                                            TEST_INTERFACE, "test2");
+            msg << 2;
+            FCITX_INFO() << "Coroutine call test2";
+            auto reply = co_await AsyncCall(std::move(msg), 0);
+            FCITX_ASSERT(reply.type() == MessageType::Reply);
+            FCITX_INFO() << "Coroutine got reply";
+            std::string value;
+            reply >> value;
+            FCITX_ASSERT(value == "2");
+            bus.eventLoop()->exit();
+            co_return;
+        }(bus));
+
+    loop.exec();
+}
+
+Coroutine<void> emptyMessageCall(bool &threw, EventLoop &loop) {
+    try {
+        co_await AsyncCall(dbus::Message());
+    } catch (const std::runtime_error &) {
+        threw = true;
+        loop.exit();
+    }
+}
+
+void test_coroutine_empty_message() {
+    EventLoop loop;
+    EventDispatcher dispatcher;
+    dispatcher.attach(&loop);
+    bool threw = false;
+    sendToEventDispatcherDetached(&dispatcher, emptyMessageCall(threw, loop));
+    loop.exec();
+    FCITX_ASSERT(threw);
+}
+
+void test_coroutine_multiple_calls() {
+    Bus bus(BusType::Session);
+    FCITX_ASSERT(bus.isOpen());
+    EventLoop loop;
+    bus.attachEventLoop(&loop);
+
+    FCITX_ASSERT(&loop == bus.eventLoop());
+    FCITX_ASSERT(
+        bus.requestName(TEST_SERVICE, {RequestNameFlag::AllowReplacement,
+                                       RequestNameFlag::ReplaceExisting}));
+    TestObject obj;
+    FCITX_ASSERT(bus.addObjectVTable("/test", TEST_INTERFACE, obj));
+    EventDispatcher dispatcher;
+    dispatcher.attach(&loop);
+
+    sendToEventDispatcherDetached(
+        &dispatcher, [](dbus::Bus &bus, EventLoop &loop) -> Coroutine<void> {
+            auto reply1 = co_await AsyncCall(
+                std::move(bus.createMethodCall(TEST_SERVICE, "/test",
+                                               TEST_INTERFACE, "test2")
+                          << 2),
+                0);
+            FCITX_ASSERT(reply1.type() == MessageType::Reply);
+            std::string value1;
+            reply1 >> value1;
+            FCITX_ASSERT(value1 == "2");
+
+            auto msg2 = bus.createMethodCall(TEST_SERVICE, "/test",
+                                             TEST_INTERFACE, "test2");
+            msg2 << 5;
+            auto reply2 = co_await AsyncCall(std::move(msg2), 0);
+            FCITX_ASSERT(reply2.type() == MessageType::Reply);
+            std::string value2;
+            reply2 >> value2;
+            FCITX_ASSERT(value2 == "5");
+
+            auto msg3 = bus.createMethodCall(TEST_SERVICE, "/test",
+                                             TEST_INTERFACE, "test5");
+            std::vector<DictEntry<std::string, std::string>> entries;
+            entries.emplace_back("abc", "def");
+            entries.emplace_back("a", "defg");
+            msg3 << entries;
+            auto reply3 = co_await AsyncCall(std::move(msg3), 0);
+            FCITX_ASSERT(reply3.type() == MessageType::Reply);
+            std::string value3;
+            reply3 >> value3;
+            FCITX_ASSERT(value3 == "defg");
+
+            loop.exit();
+            co_return;
+        }(bus, loop));
+
+    loop.exec();
+}
+
+void test_rule() {
 
     {
         MatchRule rule(TEST_SERVICE, "", TEST_INTERFACE, "testSignal");
@@ -267,11 +396,95 @@ int main() {
                      "testSignal',member='Test',arg0='abc',eavesdrop='true'")
             << rule.rule();
     }
+}
 
-    std::thread thread(client);
-
+void test_delete() {
+    std::unique_ptr<Bus> bus = std::make_unique<Bus>(BusType::Session);
+    FCITX_ASSERT(bus->isOpen());
+    EventLoop loop;
+    bus->attachEventLoop(&loop);
+    FCITX_ASSERT(&loop == bus->eventLoop());
+    auto call = bus->createMethodCall("org.freedesktop.DBus", "/non/existing",
+                                      "org.freedesktop.DBus", "BadMethod");
+    auto reply = call.callAsync(0, [&](dbus::Message &msg) {
+        FCITX_ASSERT(msg.type() == MessageType::Error);
+        FCITX_ASSERT(msg.isError());
+        bus.reset();
+        loop.exit();
+        return true;
+    });
     loop.exec();
+}
 
-    thread.join();
+#define DEFER_TEST_SERVICE "org.fcitx.Fcitx.TestDBusDefer"
+#define DEFER_TEST_INTERFACE "org.fcitx.Fcitx.TestDBusDefer.Interface"
+
+// Test MethodCallDefer: method defers its reply until an async call completes.
+class DeferTestObject : public ObjectVTable<DeferTestObject> {
+    std::string testDefer() {
+        auto slotHolder = std::make_shared<std::unique_ptr<Slot>>();
+        auto *bus = this->bus();
+
+        auto msg = bus->createMethodCall(DEFER_TEST_SERVICE, "/defertest",
+                                         DEFER_TEST_INTERFACE, "justReturn");
+        auto reply = std::make_shared<Message>(currentMessage()->createReply());
+        *slotHolder = msg.callAsync(0,
+                                    [reply = std::move(reply),
+                                     slotHolder](Message &msg) mutable -> bool {
+                                        FCITX_ASSERT(*slotHolder);
+                                        FCITX_ASSERT(!msg.isError());
+                                        std::string returnValue;
+                                        msg >> returnValue;
+                                        *reply << returnValue;
+                                        reply->send();
+                                        slotHolder->reset();
+                                        return true;
+                                    });
+
+        throw MethodCallNoReply();
+    }
+
+    std::string justReturn() { return "justReturn"; }
+
+private:
+    FCITX_OBJECT_VTABLE_METHOD(testDefer, "testDefer", "", "s");
+    FCITX_OBJECT_VTABLE_METHOD(justReturn, "justReturn", "", "s");
+};
+
+void test_defer() {
+    Bus bus(BusType::Session);
+    FCITX_ASSERT(bus.isOpen());
+    EventLoop loop;
+    bus.attachEventLoop(&loop);
+    FCITX_ASSERT(bus.requestName(
+        DEFER_TEST_SERVICE,
+        {RequestNameFlag::AllowReplacement, RequestNameFlag::ReplaceExisting}));
+    DeferTestObject obj;
+    FCITX_ASSERT(bus.addObjectVTable("/defertest", DEFER_TEST_INTERFACE, obj));
+
+    auto msg = bus.createMethodCall(DEFER_TEST_SERVICE, "/defertest",
+                                    DEFER_TEST_INTERFACE, "testDefer");
+    // Use a generous timeout: the server must do an async call first.
+    auto slot = msg.callAsync(5000000, [&loop](Message &reply) {
+        FCITX_ASSERT(!reply.isError()) << reply.errorName();
+        std::string ret;
+        reply >> ret;
+        FCITX_ASSERT(ret == "justReturn") << ret;
+        loop.exit();
+        return true;
+    });
+    loop.exec();
+}
+
+} // namespace
+
+int main() {
+    test_client();
+    test_coroutine();
+    test_coroutine_multiple_calls();
+    test_coroutine_empty_message();
+    test_rule();
+    test_delete();
+    test_defer();
     return 0;
 }

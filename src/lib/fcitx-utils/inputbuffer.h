@@ -7,13 +7,15 @@
 #ifndef _FCITX_UTILS_INPUTBUFFER_H_
 #define _FCITX_UTILS_INPUTBUFFER_H_
 
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <fcitx-utils/fcitxutils_export.h>
 #include <fcitx-utils/flags.h>
 #include <fcitx-utils/macros.h>
-#include "fcitxutils_export.h"
 
 /// \addtogroup FcitxUtils
 /// \{
@@ -35,7 +37,7 @@ enum class InputBufferOption {
 
 using InputBufferOptions = Flags<InputBufferOption>;
 
-/// A string buffer that come with convinient functions to handle use input.
+/// A string buffer that come with convenient functions to handle use input.
 class FCITXUTILS_EXPORT InputBuffer {
 public:
     /// Create a input buffer with options.
@@ -48,7 +50,7 @@ public:
 
     /// Type a C-String with length into buffer.
     bool type(const char *s, size_t length) { return typeImpl(s, length); }
-    /// Type an std::stirng to buffer.
+    /// Type an std::string to buffer.
     bool type(const std::string &s) { return type(s.c_str(), s.size()); }
     /// Type a C-String to buffer.
     bool type(const char *s) { return type(s, std::strlen(s)); }

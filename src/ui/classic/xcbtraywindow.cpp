@@ -6,16 +6,33 @@
  */
 #include "xcbtraywindow.h"
 #include <unistd.h>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+#include <cairo.h>
+#include <xcb/xcb.h>
 #include <xcb/xcb_aux.h>
+#include <xcb/xcb_ewmh.h>
 #include <xcb/xcb_icccm.h>
+#include <xcb/xproto.h>
 #include "fcitx-utils/i18n.h"
+#include "fcitx-utils/misc.h"
+#include "fcitx-utils/rect.h"
+#include "fcitx/action.h"
 #include "fcitx/inputcontext.h"
 #include "fcitx/inputmethodentry.h"
 #include "fcitx/inputmethodmanager.h"
 #include "fcitx/statusarea.h"
 #include "fcitx/userinterfacemanager.h"
 #include "common.h"
+#include "xcb_public.h"
 #include "xcbmenu.h"
+#include "xcbui.h"
+#include "xcbwindow.h"
 
 namespace fcitx::classicui {
 
@@ -35,7 +52,7 @@ XCBTrayWindow::XCBTrayWindow(XCBUI *ui) : XCBWindow(ui, 48, 48) {
     }
     groupAction_.setShortText(_("Group"));
     groupAction_.setMenu(&groupMenu_);
-    configureAction_.setShortText(_("Configure"));
+    configureAction_.setShortText(_("Input Method Settings"));
     restartAction_.setShortText(_("Restart"));
     exitAction_.setShortText(_("Exit"));
     menu_.addAction(&groupAction_);
@@ -103,6 +120,10 @@ bool XCBTrayWindow::filterEvent(xcb_generic_event_t *event) {
                            ConstrainAdjustment::Flip);
             } else if (press->detail == XCB_BUTTON_INDEX_1) {
                 ui_->parent()->instance()->toggle();
+            } else if (press->detail == XCB_BUTTON_INDEX_4) {
+                ui_->parent()->instance()->enumerate(true);
+            } else if (press->detail == XCB_BUTTON_INDEX_5) {
+                ui_->parent()->instance()->enumerate(false);
             }
             return true;
         }
@@ -112,7 +133,7 @@ bool XCBTrayWindow::filterEvent(xcb_generic_event_t *event) {
     case XCB_EXPOSE: {
         auto *expose = reinterpret_cast<xcb_expose_event_t *>(event);
         if (expose->window == wid_) {
-            CLASSICUI_DEBUG() << "Tray recevied expose event";
+            CLASSICUI_DEBUG() << "Tray received expose event";
             update();
             return true;
         }
@@ -122,7 +143,7 @@ bool XCBTrayWindow::filterEvent(xcb_generic_event_t *event) {
         auto *configure =
             reinterpret_cast<xcb_configure_notify_event_t *>(event);
         if (wid_ == configure->event) {
-            CLASSICUI_DEBUG() << "Tray recevied configure event";
+            CLASSICUI_DEBUG() << "Tray received configure event";
             hintHeight_ = configure->height;
             hintWidth_ = configure->width;
             resizeTrayWindow();
@@ -146,8 +167,9 @@ bool XCBTrayWindow::filterEvent(xcb_generic_event_t *event) {
             createTrayWindow();
             findDock();
             return true;
-        } else if (property->atom == atoms_[ATOM_ORIENTATION] &&
-                   property->window == dockWindow_) {
+        }
+        if (property->atom == atoms_[ATOM_ORIENTATION] &&
+            property->window == dockWindow_) {
             isHorizontal_ = trayOrientation();
             resizeTrayWindow();
             return true;
@@ -352,8 +374,11 @@ void XCBTrayWindow::paint(cairo_t *c) {
         icon, label, std::min(height(), width()), ui_->parent());
 
     cairo_save(c);
-    cairo_set_operator(c, CAIRO_OPERATOR_SOURCE);
-    double scaleW = 1.0, scaleH = 1.0;
+    cairo_set_operator(c, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(c);
+    cairo_set_operator(c, CAIRO_OPERATOR_OVER);
+    double scaleW = 1.0;
+    double scaleH = 1.0;
     if (image.width() != width() || image.height() != height()) {
         scaleW = static_cast<double>(width()) / image.width();
         scaleH = static_cast<double>(height()) / image.height();
@@ -366,9 +391,9 @@ void XCBTrayWindow::paint(cairo_t *c) {
     int aw = scaleW * image.width();
     int ah = scaleH * image.height();
 
-    cairo_scale(c, scaleW, scaleH);
-    cairo_set_source_surface(c, image, (width() - aw) / 2, (height() - ah) / 2);
-    cairo_paint(c);
+    image.paintRegion(c, ThemeImage::TilePosition::Center, (width() - aw) / 2.0,
+                      (height() - ah) / 2.0, image.width() * scaleW,
+                      image.height() * scaleH);
     cairo_restore(c);
 }
 
@@ -391,8 +416,7 @@ void XCBTrayWindow::render() {
     }
     auto *cr = cairo_create(surface_.get());
     if (trayDepth_ == 32) {
-        cairo_set_source_rgba(cr, 0, 0, 0, 0);
-        cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+        cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
         cairo_paint(cr);
     }
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);

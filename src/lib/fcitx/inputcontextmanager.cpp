@@ -7,15 +7,28 @@
 
 #include "inputcontextmanager.h"
 #include <cassert>
+#include <cstddef>
+#include <functional>
+#include <memory>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #include "fcitx-utils/intrusivelist.h"
 #include "fcitx-utils/log.h"
-#include "fcitx/misc_p.h"
+#include "fcitx-utils/macros.h"
+#include "fcitx-utils/misc.h"
+#include "fcitx-utils/trackableobject.h"
+#include "fcitx-utils/uuid_p.h"
+#include "event.h"
 #include "focusgroup.h"
 #include "focusgroup_p.h"
+#include "inputcontext.h"
 #include "inputcontext_p.h"
+#include "inputcontextproperty.h"
 #include "inputcontextproperty_p.h"
+#include "misc_p.h"
 
 namespace fcitx {
 
@@ -32,9 +45,10 @@ public:
 
     const char *frontend() const override { return "dummy"; }
 
-    void commitStringImpl(const std::string &) override {}
-    void deleteSurroundingTextImpl(int, unsigned int) override {}
-    void forwardKeyImpl(const ForwardKeyEvent &) override {}
+    void commitStringImpl(const std::string & /*text*/) override {}
+    void deleteSurroundingTextImpl(int /*offset*/,
+                                   unsigned int /*size*/) override {}
+    void forwardKeyImpl(const ForwardKeyEvent & /*key*/) override {}
     void updatePreeditImpl() override {}
 };
 
@@ -104,9 +118,8 @@ public:
         return group.d_func();
     }
 
-    inline bool registerProperty(InputContextManager *q_ptr,
-                                 const std::string &name,
-                                 InputContextPropertyFactoryPrivate *factory) {
+    bool registerProperty(InputContextManager *q_ptr, const std::string &name,
+                          InputContextPropertyFactoryPrivate *factory) {
         auto result = propertyFactories_.emplace(name, factory);
         if (!result.second) {
             return false;
@@ -123,7 +136,7 @@ public:
         return true;
     }
 
-    inline void unregisterProperty(const std::string &name) {
+    void unregisterProperty(const std::string &name) {
         auto iter = propertyFactories_.find(name);
         if (iter == propertyFactories_.end()) {
             return;
@@ -145,7 +158,7 @@ public:
         factory->slot_ = -1;
     }
 
-    inline void registerInputContext(InputContext &inputContext) {
+    void registerInputContext(InputContext &inputContext) {
         inputContexts_.push_back(inputContext);
         int maxRetry = 3;
         do {
@@ -156,21 +169,25 @@ public:
         if (!inputContext.program().empty()) {
             programMap_[inputContext.program()].insert(&inputContext);
         }
-        for (auto &p : propertyFactories_) {
-            auto *property = p.second->q_func()->create(inputContext);
-            inputContext.d_func()->registerProperty(p.second->slot_, property);
+        for (auto *factory : propertyFactoriesSlots_) {
+            inputContext.d_func()->registerProperty(
+                factory->slot_, factory->q_func()->create(inputContext));
+        }
+        for (auto *factory : propertyFactoriesSlots_) {
+            auto *property = inputContext.d_func()->property(factory->slot_);
             if (property->needCopy() &&
                 (propertyPropagatePolicy_ == PropertyPropagatePolicy::All ||
                  (!inputContext.program().empty() &&
                   propertyPropagatePolicy_ ==
                       PropertyPropagatePolicy::Program))) {
-                auto copyProperty = [&p, &inputContext,
+                auto copyProperty = [factory, &inputContext,
                                      &property](auto &container) {
                     for (auto &dstInputContext : container) {
                         if (toInputContextPointer(dstInputContext) !=
                             &inputContext) {
                             toInputContextPointer(dstInputContext)
-                                ->property(p.first)
+                                ->d_func()
+                                ->property(factory->slot_)
                                 ->copyTo(property);
                             break;
                         }
@@ -284,7 +301,7 @@ bool InputContextManager::registerProperty(
 
 void InputContextManager::unregisterProperty(const std::string &name) {
     FCITX_D();
-    return d->unregisterProperty(name);
+    d->unregisterProperty(name);
 }
 
 void InputContextManager::setPropertyPropagatePolicy(

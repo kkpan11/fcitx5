@@ -8,9 +8,9 @@
 #define _FCITX_INPUTMETHODCONFIG_P_H_
 
 #include <vector>
-#include "fcitx-config/configuration.h"
-#include "fcitx-utils/i18nstring.h"
-#include "inputmethodentry.h"
+#include <fcitx-config/configuration.h>
+#include <fcitx-utils/i18nstring.h>
+#include <fcitx/inputmethodentry.h>
 
 namespace fcitx {
 FCITX_CONFIGURATION(InputMethodGroupItemConfig,
@@ -38,7 +38,8 @@ FCITX_CONFIGURATION(
     Option<std::string> label{this, "Label", "Label"};
     Option<std::string> languageCode{this, "LangCode", "Language Code"};
     Option<std::string> addon{this, "Addon", "Addon"};
-    Option<bool> configurable{this, "Configurable", "Configurable", false};)
+    Option<bool> configurable{this, "Configurable", "Configurable", false};
+    Option<bool> enable{this, "Enable", "Enable", true};)
 
 FCITX_CONFIGURATION(InputMethodInfo, Option<InputMethodInfoBase> im{
                                          this, "InputMethod", "Input Method"};)

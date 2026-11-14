@@ -10,7 +10,7 @@
 #include <memory>
 #include <fcitx-utils/macros.h>
 #include <fcitx-utils/trackableobject.h>
-#include "fcitxcore_export.h"
+#include <fcitx/fcitxcore_export.h>
 
 /// \addtogroup FcitxCore
 /// \{
@@ -40,7 +40,7 @@ public:
     /**
      * copy state to another property.
      *
-     * Default implemenation is empty.
+     * Default implementation is empty.
      * This is triggered by InputContext::updateProperty.
      *
      * @see InputContext::updateProperty
@@ -105,7 +105,7 @@ private:
 };
 
 /**
- * Convinient short type alias for creating a LambdaInputContextPropertyFactory.
+ * Convenient short type alias for creating a LambdaInputContextPropertyFactory.
  *
  * Example usage:
  * Define it as a field of AddonInstance.

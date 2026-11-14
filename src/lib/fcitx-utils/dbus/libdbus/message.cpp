@@ -8,9 +8,16 @@
 #include "../message.h"
 #include <fcntl.h>
 #include <unistd.h>
-#include <atomic>
+#include <cerrno>
+#include <cstdint>
+#include <memory>
 #include <stdexcept>
-#include "../../misc_p.h"
+#include <string>
+#include <utility>
+#include <dbus/dbus-protocol.h>
+#include <dbus/dbus.h>
+#include "../../macros.h"
+#include "../../misc.h"
 #include "../../unixfd.h"
 #include "../variant.h"
 #include "bus_p.h"
@@ -78,7 +85,7 @@ std::string Message::destination() const {
     if (!d->msg()) {
         return {};
     }
-    auto result = dbus_message_get_destination(d->msg());
+    const auto *result = dbus_message_get_destination(d->msg());
     return result ? result : "";
 }
 
@@ -234,6 +241,22 @@ void Message::skip() {
     dbus_message_iter_next(d->iterator());
 }
 
+uint64_t Message::serial() {
+    FCITX_D();
+    if (!d->msg()) {
+        return 0;
+    }
+    return dbus_message_get_serial(d->msg());
+}
+
+uint64_t Message::replySerial() {
+    FCITX_D();
+    if (!d->msg()) {
+        return 0;
+    }
+    return dbus_message_get_reply_serial(d->msg());
+}
+
 std::pair<char, std::string> Message::peekType() {
     FCITX_D();
 
@@ -281,6 +304,7 @@ Message &Message::operator>>(bool &b) {
     return *this;
 }
 
+// NOLINTBEGIN(bugprone-macro-parentheses)
 #define _MARSHALL_FUNC(TYPE, TYPE2)                                            \
     Message &Message::operator<<(TYPE v) {                                     \
         if (!(*this)) {                                                        \
@@ -305,6 +329,7 @@ Message &Message::operator>>(bool &b) {
         }                                                                      \
         return *this;                                                          \
     }
+// NOLINTEND(bugprone-macro-parentheses)
 
 _MARSHALL_FUNC(uint8_t, BYTE)
 _MARSHALL_FUNC(int16_t, INT16)
@@ -364,7 +389,8 @@ Message &Message::operator>>(ObjectPath &o) {
     }
     FCITX_D();
     char *p = nullptr;
-    if (dbus_message_iter_get_arg_type(d->iterator()) == DBUS_TYPE_STRING) {
+    if (dbus_message_iter_get_arg_type(d->iterator()) ==
+        DBUS_TYPE_OBJECT_PATH) {
         dbus_message_iter_get_basic(d->iterator(), &p);
         o = ObjectPath(p);
         dbus_message_iter_next(d->iterator());
@@ -460,7 +486,7 @@ Message &Message::operator>>(const Container &c) {
     return *this;
 }
 
-Message &Message::operator<<(const ContainerEnd &) {
+Message &Message::operator<<(const ContainerEnd & /*unused*/) {
     if (!(*this)) {
         return *this;
     }
@@ -469,7 +495,7 @@ Message &Message::operator<<(const ContainerEnd &) {
     return *this;
 }
 
-Message &Message::operator>>(const ContainerEnd &) {
+Message &Message::operator>>(const ContainerEnd & /*unused*/) {
     if (!(*this)) {
         return *this;
     }

@@ -7,11 +7,24 @@
 #ifndef _FCITX5_FRONTEND_WAYLANDIM_WAYLANDIMSERVER_H_
 #define _FCITX5_FRONTEND_WAYLANDIM_WAYLANDIMSERVER_H_
 
+#include <cstdint>
 #include <memory>
-#include "fcitx-utils/event.h"
+#include <optional>
+#include <string>
+#include <tuple>
+#include <wayland-client-core.h>
+#include <wayland-client-protocol.h>
+#include "fcitx-utils/eventloopinterface.h"
 #include "fcitx-utils/key.h"
-#include "fcitx-utils/keysymgen.h"
+#include "fcitx-utils/keysym.h"
 #include "fcitx-utils/macros.h"
+#include "fcitx-utils/signals.h"
+#include "fcitx-utils/trackableobject.h"
+#include "fcitx/event.h"
+#include "fcitx/focusgroup.h"
+#include "fcitx/inputcontext.h"
+#include "fcitx/inputcontextmanager.h"
+#include "fcitx/instance.h"
 #include "virtualinputcontext.h"
 #include "waylandimserverbase.h"
 #include "wl_keyboard.h"
@@ -75,17 +88,19 @@ public:
 
 protected:
     void commitStringDelegate(const InputContext *ic,
-                              const std::string &text) const override {
+                              const std::string &text) override {
         FCITX_UNUSED(ic);
         if (!ic_) {
             return;
         }
-        ic_->commitString(serial_, text.c_str());
+
+        WaylandIMServerBase::commitStringWrapper(
+            text, [this](const char *str) { ic_->commitString(serial_, str); });
     }
     void deleteSurroundingTextDelegate(InputContext *ic, int offset,
-                                       unsigned int size) const override;
+                                       unsigned int size) override;
     void forwardKeyDelegate(InputContext *ic,
-                            const ForwardKeyEvent &key) const override {
+                            const ForwardKeyEvent &key) override {
         FCITX_UNUSED(ic);
         if (!ic_) {
             return;
@@ -110,7 +125,7 @@ protected:
         }
     }
 
-    void updatePreeditDelegate(InputContext *ic) const override;
+    void updatePreeditDelegate(InputContext *ic) override;
 
 private:
     void repeat();
@@ -152,6 +167,9 @@ private:
         return modifiers;
     }
 
+    int32_t repeatRate() const;
+    int32_t repeatDelay() const;
+
     WaylandIMServer *server_;
     std::unique_ptr<wayland::ZwpInputMethodContextV1> ic_;
     std::unique_ptr<wayland::WlKeyboard> keyboard_;
@@ -164,7 +182,7 @@ private:
     uint32_t repeatTime_ = 0;
     KeySym repeatSym_ = FcitxKey_None;
 
-    int32_t repeatRate_ = 40, repeatDelay_ = 400;
+    std::optional<std::tuple<int32_t, int32_t>> repeatInfo_;
 };
 
 } // namespace fcitx

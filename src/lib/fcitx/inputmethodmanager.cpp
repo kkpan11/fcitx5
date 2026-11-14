@@ -7,21 +7,46 @@
 
 #include "inputmethodmanager.h"
 #include <fcntl.h>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <functional>
+#include <iterator>
 #include <list>
+#include <memory>
+#include <stdexcept>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 #include "fcitx-config/iniparser.h"
 #include "fcitx-config/rawconfig.h"
+#include "fcitx-utils/connectableobject.h"
+#include "fcitx-utils/handlertable.h"
 #include "fcitx-utils/i18n.h"
 #include "fcitx-utils/log.h"
-#include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/macros.h"
+#include "fcitx-utils/misc_p.h"
+#include "fcitx-utils/standardpaths.h"
+#include "fcitx-utils/unixfd.h"
+#include "addoninfo.h"
 #include "addonmanager.h"
 #include "inputmethodconfig_p.h"
 #include "inputmethodengine.h"
+#include "inputmethodgroup.h"
 #include "instance.h"
-#include "misc_p.h"
 
 namespace fcitx {
+
+namespace {
+
+bool checkEntry(const InputMethodEntry &entry,
+                const std::unordered_set<std::string> &inputMethods) {
+    return !entry.name().empty() && !entry.uniqueName().empty() &&
+           !entry.addon().empty() && inputMethods.contains(entry.addon());
+}
+} // namespace
 
 class InputMethodManagerPrivate : QPtrHolder<InputMethodManager> {
 public:
@@ -55,19 +80,13 @@ public:
     int64_t timestamp_ = 0;
 };
 
-bool checkEntry(const InputMethodEntry &entry,
-                const std::unordered_set<std::string> &inputMethods) {
-    return !(entry.name().empty() || entry.uniqueName().empty() ||
-             entry.addon().empty() || inputMethods.count(entry.addon()) == 0);
-}
-
 void InputMethodManagerPrivate::loadConfig(
     const std::function<void(InputMethodManager &)>
         &buildDefaultGroupCallback) {
-    const auto &path = StandardPath::global();
-    auto file = path.open(StandardPath::Type::PkgConfig, "profile", O_RDONLY);
+    const auto &path = StandardPaths::global();
+    auto file = path.open(StandardPathsType::PkgConfig, "profile");
     RawConfig config;
-    if (file.fd() >= 0) {
+    if (file.isValid()) {
         readFromIni(config, file.fd());
     }
     InputMethodConfig imConfig;
@@ -91,7 +110,7 @@ void InputMethodManagerPrivate::loadConfig(
             group.setDefaultLayout(groupConfig.defaultLayout.value());
             const auto &items = groupConfig.items.value();
             for (const auto &item : items) {
-                if (!entries_.count(item.name.value())) {
+                if (!entries_.contains(item.name.value())) {
                     FCITX_WARN() << "Group Item " << item.name.value()
                                  << " in group " << groupConfig.name.value()
                                  << " is not valid. Removed.";
@@ -149,20 +168,25 @@ void InputMethodManagerPrivate::buildDefaultGroup(
 
 void InputMethodManagerPrivate::loadStaticEntries(
     const std::unordered_set<std::string> &addonNames) {
-    const auto &path = StandardPath::global();
-    timestamp_ = path.timestamp(StandardPath::Type::PkgData, "inputmethod");
-    auto filesMap = path.multiOpen(StandardPath::Type::PkgData, "inputmethod",
-                                   O_RDONLY, filter::Suffix(".conf"));
-    for (const auto &[fileName, file] : filesMap) {
-        std::string name = fileName.substr(0, fileName.size() - 5);
-        if (entries_.count(name) != 0) {
+    const auto &path = StandardPaths::global();
+    timestamp_ = path.timestamp(StandardPathsType::PkgData, "inputmethod");
+    auto filesMap = path.locate(StandardPathsType::PkgData, "inputmethod",
+                                pathfilter::extension(".conf"));
+    for (const auto &[fileName, fullName] : filesMap) {
+        const auto u8name = fileName.stem().u8string();
+        std::string name(u8name.begin(), u8name.end());
+        if (entries_.contains(name)) {
             continue;
         }
         RawConfig config;
-        readFromIni(config, file.fd());
+        UnixFD fd = StandardPaths::openPath(fullName);
+        readFromIni(config, fd.fd());
 
         InputMethodInfo imInfo;
         imInfo.load(config);
+        if (!*imInfo.im->enable) {
+            continue;
+        }
         // Remove ".conf"
         InputMethodEntry entry = toInputMethodEntry(name, imInfo);
         if (checkEntry(entry, addonNames)) {
@@ -189,10 +213,10 @@ void InputMethodManagerPrivate::loadDynamicEntries(
         FCITX_INFO() << "Found " << newEntries.size() << " input method(s) "
                      << "in addon " << addonName;
         for (auto &newEntry : newEntries) {
-            // ok we can't let you register something werid.
+            // ok we can't let you register something weird.
             if (checkEntry(newEntry, addonNames) &&
                 newEntry.addon() == addonName &&
-                entries_.count(newEntry.uniqueName()) == 0) {
+                !entries_.contains(newEntry.uniqueName())) {
                 entries_.emplace(std::string(newEntry.uniqueName()),
                                  std::move(newEntry));
             }
@@ -252,8 +276,7 @@ void InputMethodManager::setCurrentGroup(const std::string &groupName) {
     if (groupName == d->groupOrder_.front()) {
         return;
     }
-    auto iter =
-        std::find(d->groupOrder_.begin(), d->groupOrder_.end(), groupName);
+    auto iter = std::ranges::find(d->groupOrder_, groupName);
     if (iter != d->groupOrder_.end()) {
         emit<InputMethodManager::CurrentGroupAboutToChange>(
             d->groupOrder_.front());
@@ -267,8 +290,7 @@ void InputMethodManager::enumerateGroupTo(const std::string &groupName) {
     if (groupName == d->groupOrder_.front()) {
         return;
     }
-    auto iter =
-        std::find(d->groupOrder_.begin(), d->groupOrder_.end(), groupName);
+    auto iter = std::ranges::find(d->groupOrder_, groupName);
     if (iter != d->groupOrder_.end()) {
         emit<InputMethodManager::CurrentGroupAboutToChange>(
             d->groupOrder_.front());
@@ -326,12 +348,14 @@ void InputMethodManager::setGroup(InputMethodGroup newGroupInfo) {
         }
     }
     auto &list = newGroupInfo.inputMethodList();
-    auto iter = std::remove_if(list.begin(), list.end(),
-                               [d](const InputMethodGroupItem &item) {
-                                   return !d->entries_.count(item.name());
-                               });
-    list.erase(iter, list.end());
-    newGroupInfo.setDefaultInputMethod(newGroupInfo.defaultInputMethod());
+    std::erase_if(list, [d](const InputMethodGroupItem &item) {
+        return !d->entries_.contains(item.name());
+    });
+    auto defaultInputMethod = newGroupInfo.defaultInputMethod();
+    if (defaultInputMethod.empty()) {
+        defaultInputMethod = group->defaultInputMethod();
+    }
+    newGroupInfo.setDefaultInputMethod(defaultInputMethod);
     *group = std::move(newGroupInfo);
     if (!d->buildingGroup_ && isCurrent) {
         emit<InputMethodManager::CurrentGroupChanged>(d->groupOrder_.front());
@@ -343,13 +367,13 @@ void InputMethodManagerPrivate::setGroupOrder(
     groupOrder_.clear();
     std::unordered_set<std::string> added;
     for (const auto &groupName : groupOrder) {
-        if (groups_.count(groupName)) {
+        if (groups_.contains(groupName)) {
             groupOrder_.push_back(groupName);
             added.insert(groupName);
         }
     }
     for (auto &p : groups_) {
-        if (!added.count(p.first)) {
+        if (!added.contains(p.first)) {
             groupOrder_.push_back(p.first);
         }
     }
@@ -455,8 +479,8 @@ void InputMethodManager::setGroupOrder(const std::vector<std::string> &groups) {
 
 bool InputMethodManager::checkUpdate() const {
     FCITX_D();
-    auto timestamp = StandardPath::global().timestamp(
-        StandardPath::Type::PkgData, "inputmethod");
+    auto timestamp = StandardPaths::global().timestamp(
+        StandardPathsType::PkgData, "inputmethod");
     return timestamp > d->timestamp_;
 }
 

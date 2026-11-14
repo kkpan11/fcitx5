@@ -10,14 +10,27 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <initializer_list>
 #include <list>
 #include <string>
-#include <type_traits>
+#include <string_view>
 #include <unordered_map>
-#include <config.h>
-#include "endian_p.h"
+#include <utility>
+#include <fcitx-utils/endian_p.h>
+#include <fcitx-utils/environ.h>
+#include <fcitx-utils/macros.h>
+#include <ranges>
+#include "config.h" // IWYU pragma: keep
+
+#ifdef _WIN32
+#include <io.h>
+#include <namedpipeapi.h>
+#include <windows.h>
+#endif
 
 namespace fcitx {
 
@@ -32,8 +45,7 @@ decltype(&std::declval<M>().begin()->second) findValue(M &&m, K &&key) {
 
 template <typename C, typename V>
 bool containerContains(C &&container, V &&value) {
-    return std::find(std::begin(container), std::end(container), value) !=
-           std::end(container);
+    return std::ranges::find(container, value) != std::ranges::end(container);
 }
 
 template <typename T>
@@ -51,6 +63,7 @@ public:
     bool empty() const { return order_.empty(); }
 
     const T &front() const { return order_.front(); }
+    T &front() { return order_.front(); }
 
     void clear() {
         dict_.clear();
@@ -164,6 +177,9 @@ public:
 
     /// Copy assignment operator.
     OrderedMap &operator=(const OrderedMap &other) {
+        if (this == &other) {
+            return *this;
+        }
         order_ = list_type(other.order_.begin(), other.order_.end());
         fillMap();
         return *this;
@@ -171,6 +187,9 @@ public:
 
     /// Move assignment operator.
     OrderedMap &operator=(OrderedMap &&other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
         using std::swap;
         swap(order_, other.order_);
         swap(map_, other.map_);
@@ -267,12 +286,13 @@ public:
         if (iter != end()) {
             return iter->second;
         }
-        auto result = emplace(std::move(k), value_type());
+        auto result = emplace(std::move(k), mapped_type());
         return result.first->second;
     }
 
 private:
     void fillMap() {
+        map_.clear();
         for (auto iter = order_.begin(), end = order_.end(); iter != end;
              iter++) {
             map_[iter->first] = iter;
@@ -281,8 +301,20 @@ private:
 };
 
 static inline int safePipe(int pipefd[2]) {
-#ifdef HAVE_PIPE2
+#if defined(HAVE_PIPE2)
     return ::pipe2(pipefd, O_NONBLOCK | O_CLOEXEC);
+#elif defined(_WIN32)
+    auto ret = ::_pipe(pipefd, 256, O_BINARY | O_NOINHERIT);
+    if (ret == -1) {
+        return -1;
+    }
+    std::array handle = {_get_osfhandle(pipefd[0]), _get_osfhandle(pipefd[1])};
+    DWORD mode = PIPE_NOWAIT;
+    SetNamedPipeHandleState(reinterpret_cast<HANDLE>(handle[0]), &mode, nullptr,
+                            nullptr);
+    SetNamedPipeHandleState(reinterpret_cast<HANDLE>(handle[1]), &mode, nullptr,
+                            nullptr);
+    return ret;
 #else
     int ret = ::pipe(pipefd);
     if (ret == -1)
@@ -296,11 +328,10 @@ static inline int safePipe(int pipefd[2]) {
 }
 
 static inline bool checkBoolEnvVar(const char *name) {
-    const char *var = getenv(name);
+    auto var = getEnvironment(name);
     bool value = false;
-    if (var && var[0] &&
-        (strcmp(var, "True") == 0 || strcmp(var, "true") == 0 ||
-         strcmp(var, "1") == 0)) {
+    if (var && !var->empty() &&
+        (var == "True" || var == "true" || var == "1")) {
         value = true;
     }
     return value;

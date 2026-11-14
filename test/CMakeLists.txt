@@ -3,6 +3,9 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 add_subdirectory(addon)
 
+add_library(eventlooptests STATIC eventlooptests.cpp)
+target_link_libraries(eventlooptests Fcitx5::Utils Pthread::Pthread)
+
 set(FCITX_UTILS_TEST
     testflags
     teststringutils
@@ -14,7 +17,6 @@ set(FCITX_UTILS_TEST
     testlist
     testfs
     testlibrary
-    teststandardpath
     testunixfd
     testmetastring
     testhandlertable
@@ -24,16 +26,37 @@ set(FCITX_UTILS_TEST
     testeventdispatcher
     testrect
     testfallbackuuid
-    testsemver)
+    testsemver
+    testenviron
+    testfdstreambuf
+    testmappedbuffer
+    testcoroutine)
+
+if (WIN32)
+    list(APPEND FCITX_UTILS_TEST teststandardpaths_win)
+else()
+    list(APPEND FCITX_UTILS_TEST teststandardpath)
+    list(APPEND FCITX_UTILS_TEST teststandardpaths_unix)
+endif()
 
 set(FCITX_UTILS_DBUS_TEST
     testdbusmessage
     testdbus
     testservicewatcher)
 
+if(HAVE_NO_DEPRECATED_DECLARATIONS)
+    set_source_files_properties(teststandardpath.cpp PROPERTIES COMPILE_FLAGS "-Wno-deprecated-declarations")
+endif()
+
 set(testdbus_LIBS Pthread::Pthread)
 set(testeventdispatcher_LIBS Pthread::Pthread)
-set(testevent_LIBS Pthread::Pthread)
+set(testevent_LIBS eventlooptests)
+set(testmappedbuffer_LIBS Pthread::Pthread)
+
+if (NOT WIN32)
+list(APPEND FCITX_UTILS_TEST testcustomeventloop)
+set(testcustomeventloop_LIBS eventlooptests)
+endif()
 
 find_program(XVFB_BIN Xvfb)
 
@@ -45,13 +68,18 @@ if (ENABLE_DBUS)
     add_executable(DBusWrapper IMPORTED)
     set_target_properties(DBusWrapper PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/dbus_wrapper.sh")
 
+    add_test(NAME testremotehelp
+             COMMAND ${CMAKE_COMMAND} -E env
+                     "DBUS_SESSION_BUS_ADDRESS=unix:path=${CMAKE_CURRENT_BINARY_DIR}/nonexistent-dbus"
+                     $<TARGET_FILE:fcitx5-remote> --help)
+
     foreach(TESTCASE ${FCITX_UTILS_DBUS_TEST})
         add_executable(${TESTCASE} ${TESTCASE}.cpp)
         target_link_libraries(${TESTCASE} Fcitx5::Utils ${${TESTCASE}_LIBS})
 
         if (DBUS_DAEMON_BIN)
             add_test(NAME ${TESTCASE}
-                    COMMAND DBusWrapper "${DBUS_DAEMON_BIN}" "${CMAKE_CURRENT_BINARY_DIR}/${TESTCASE}" ${${TESTCASE}_ARGS})
+                    COMMAND DBusWrapper "${DBUS_DAEMON_BIN}" "$<TARGET_FILE:${TESTCASE}>" ${${TESTCASE}_ARGS})
         endif()
     endforeach()
 endif()
@@ -79,6 +107,8 @@ foreach(TESTCASE ${FCITX_CONFIG_TEST})
 endforeach()
 
 set(testinputcontext_LIBS Fcitx5::Module::TestFrontend Fcitx5::Module::TestIM)
+set(testinstance_LIBS Fcitx5::Module::TestFrontend)
+set(testtempmode_LIBS Fcitx5::Module::TestFrontend Fcitx5::Module::TestIM)
 
 set(FCITX_CORE_TEST
     testinputcontext
@@ -90,7 +120,9 @@ set(FCITX_CORE_TEST
     testcandidatelist
     testicontheme
     testtext
-    testinstance)
+    testinstance
+    testkeyevent
+    testtempmode)
 
 foreach(TESTCASE ${FCITX_CORE_TEST})
     add_executable(${TESTCASE} ${TESTCASE}.cpp)
@@ -100,8 +132,17 @@ foreach(TESTCASE ${FCITX_CORE_TEST})
 endforeach()
 
 add_dependencies(testaddon dummyaddon)
+add_dependencies(testinstance copy-addon testfrontend testim)
+add_dependencies(testinputcontext copy-addon testfrontend testim)
+add_dependencies(testtempmode copy-addon testfrontend testim)
 
 if (ENABLE_KEYBOARD)
+    add_executable(testimselector testimselector.cpp)
+    target_compile_definitions(testimselector PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_BINARY_DIR}")
+    target_link_libraries(testimselector Fcitx5::Core Fcitx5::Module::TestFrontend keyboard)
+    add_dependencies(testimselector copy-addon imselector imselector.conf.in-fmt testfrontend testim)
+    add_test(NAME testimselector COMMAND testimselector)
+
     add_executable(testxkbrules testxkbrules.cpp ../src/im/keyboard/xkbrules.cpp ../src/im/keyboard/xmlparser.cpp)
     target_compile_definitions(testxkbrules PRIVATE "-D_TEST_XKBRULES")
     target_include_directories(testxkbrules PRIVATE ../src)
@@ -111,7 +152,7 @@ if (ENABLE_KEYBOARD)
     add_executable(testisocodes testisocodes.cpp ../src/im/keyboard/isocodes.cpp)
     target_compile_definitions(testisocodes PRIVATE "-D_TEST_XKBRULES")
     target_include_directories(testisocodes PRIVATE ../src)
-    target_link_libraries(testisocodes Fcitx5::Core PkgConfig::JsonC)
+    target_link_libraries(testisocodes Fcitx5::Core nlohmann_json::nlohmann_json)
     add_test(NAME testisocodes COMMAND testisocodes)
 
     add_executable(testcompose testcompose.cpp)

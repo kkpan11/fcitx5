@@ -12,9 +12,11 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstdint>
-#include "charutils.h"
-#include "event.h"
-#include "unixfd.h"
+#include <cstring>
+#include <fcitx-utils/charutils.h>
+#include <fcitx-utils/eventloopinterface.h>
+#include <fcitx-utils/fs.h>
+#include <fcitx-utils/unixfd.h>
 
 #ifdef TEST_DISABLE_LIBUUID
 #undef ENABLE_LIBUUID
@@ -95,7 +97,7 @@ static inline void generateUUIDFallback(const char *file, uint8_t *data) {
     memcpy(data, uuid, 16);
 }
 
-// The fallback implementation would use a dummy self increament id, and it
+// The fallback implementation would use a dummy self increment id, and it
 // doesn't follow uuid spec, don't treat the value seriously.
 static inline void generateUUID(uint8_t *data) {
 #ifdef ENABLE_LIBUUID

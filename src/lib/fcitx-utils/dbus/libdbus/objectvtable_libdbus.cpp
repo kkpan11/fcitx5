@@ -5,9 +5,11 @@
  *
  */
 
-#include <unordered_set>
+#include <memory>
+#include <mutex>
+#include <string>
 #include <utility>
-#include "../../log.h"
+#include "../../macros.h"
 #include "../../stringutils.h"
 #include "../objectvtable.h"
 #include "../utils_p.h"
@@ -50,8 +52,7 @@ const std::string &ObjectVTableBasePrivate::getXml(ObjectVTableBase *q) {
             p->xml_ +=
                 stringutils::concat("<signal name=\"", sig->name(), "\">");
             for (auto &type : splitDBusSignature(sig->signature())) {
-                p->xml_ += stringutils::concat("<arg direction=\"in\" type=\"",
-                                               type, "\"/>");
+                p->xml_ += stringutils::concat("<arg type=\"", type, "\"/>");
             }
             p->xml_ += "</signal>";
         }

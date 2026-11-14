@@ -7,16 +7,32 @@
 
 #include "addonmanager.h"
 #include <fcntl.h>
+#include <cstdint>
+#include <memory>
+#include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 #include "fcitx-config/iniparser.h"
+#include "fcitx-config/rawconfig.h"
 #include "fcitx-utils/log.h"
+#include "fcitx-utils/macros.h"
 #include "fcitx-utils/misc_p.h"
-#include "fcitx/addoninstance.h"
+#include "fcitx-utils/semver.h"
+#include "fcitx-utils/standardpaths.h"
+#include "addoninfo.h"
+#include "addoninstance.h"
 #include "addoninstance_p.h"
 #include "addonloader.h"
 #include "addonloader_p.h"
+#include "config.h"
 #include "instance.h"
+
+#ifndef FCITX_NO_DL
+#include "sharedlibraryloader_p.h"
+#endif
 
 namespace fcitx {
 
@@ -60,7 +76,7 @@ enum class DependencyCheckStatus {
 
 class AddonManagerPrivate {
 public:
-    AddonManagerPrivate() : instance_(nullptr) {}
+    AddonManagerPrivate() {}
 
     Addon *addon(const std::string &name) const {
         auto iter = addons_.find(name);
@@ -76,9 +92,8 @@ public:
             if (dependency == "core") {
                 if (depVersion <= version_) {
                     continue;
-                } else {
-                    return DependencyCheckStatus::Failed;
                 }
+                return DependencyCheckStatus::Failed;
             }
             Addon *dep = addon(dependency);
             if (!dep || !dep->isLoadable()) {
@@ -148,7 +163,7 @@ public:
             return false;
         }
         if (addon.info().onDemand() &&
-            requested_.count(addon.info().uniqueName()) == 0) {
+            !requested_.contains(addon.info().uniqueName())) {
             return false;
         }
         auto result = checkDependencies(addon);
@@ -226,7 +241,7 @@ AddonManager::~AddonManager() { unload(); }
 void AddonManager::registerLoader(std::unique_ptr<AddonLoader> loader) {
     FCITX_D();
     // same loader shouldn't register twice
-    if (d->loaders_.count(loader->type())) {
+    if (d->loaders_.contains(loader->type())) {
         return;
     }
     d->loaders_.emplace(loader->type(), std::move(loader));
@@ -238,7 +253,9 @@ void AddonManager::unregisterLoader(const std::string &name) {
 }
 
 void AddonManager::registerDefaultLoader(StaticAddonRegistry *registry) {
+#ifndef FCITX_NO_DL
     registerLoader(std::make_unique<SharedLibraryLoader>());
+#endif
     if (registry) {
         registerLoader(std::make_unique<StaticLibraryLoader>(registry));
     }
@@ -247,34 +264,33 @@ void AddonManager::registerDefaultLoader(StaticAddonRegistry *registry) {
 void AddonManager::load(const std::unordered_set<std::string> &enabled,
                         const std::unordered_set<std::string> &disabled) {
     FCITX_D();
-    const auto &path = StandardPath::global();
+    const auto &path = StandardPaths::global();
     d->timestamp_ =
-        path.timestamp(StandardPath::Type::PkgData, d->addonConfigDir_);
-    auto fileMap =
-        path.multiOpen(StandardPath::Type::PkgData, d->addonConfigDir_,
-                       O_RDONLY, filter::Suffix(".conf"));
-    bool enableAll = enabled.count("all");
-    bool disableAll = disabled.count("all");
-    for (const auto &[fileName, file] : fileMap) {
+        path.timestamp(StandardPathsType::PkgData, d->addonConfigDir_);
+    auto fileNames = path.locate(StandardPathsType::PkgData, d->addonConfigDir_,
+                                 pathfilter::extension(".conf"));
+    bool enableAll = enabled.contains("all");
+    bool disableAll = disabled.contains("all");
+    for (const auto &[fileName, fullName] : fileNames) {
         // remove .conf
-        std::string name = fileName.substr(0, fileName.size() - 5);
+        std::string name = fileName.stem().string();
         if (name == "core") {
             FCITX_ERROR() << "\"core\" is not a valid addon name.";
             continue;
         }
-        if (d->addons_.count(name)) {
+        if (d->addons_.contains(name)) {
             continue;
         }
 
         RawConfig config;
-        readFromIni(config, file.fd());
+        readAsIni(config, StandardPathsType::PkgData, fullName);
 
         // override configuration
         auto addon = std::make_unique<Addon>(name, config);
         if (addon->isValid()) {
-            if (enableAll || enabled.count(name)) {
+            if (enableAll || enabled.contains(name)) {
                 addon->setOverrideEnabled(OverrideEnabled::Enabled);
-            } else if (disableAll || disabled.count(name)) {
+            } else if (disableAll || disabled.contains(name)) {
                 addon->setOverrideEnabled(OverrideEnabled::Disabled);
             }
             d->addons_[addon->info().uniqueName()] = std::move(addon);
@@ -390,8 +406,8 @@ const SemanticVersion &AddonManager::version() const {
 
 bool AddonManager::checkUpdate() const {
     FCITX_D();
-    auto timestamp = StandardPath::global().timestamp(
-        StandardPath::Type::PkgData, d->addonConfigDir_);
+    auto timestamp = StandardPaths::global().timestamp(
+        StandardPathsType::PkgData, d->addonConfigDir_);
     return timestamp > d->timestamp_;
 }
 
@@ -403,7 +419,7 @@ void AddonManager::setAddonOptions(
 
 std::vector<std::string> AddonManager::addonOptions(const std::string &name) {
     FCITX_D();
-    if (auto options = findValue(d->options_, name)) {
+    if (auto *options = findValue(d->options_, name)) {
         return *options;
     }
     return {};

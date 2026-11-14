@@ -7,15 +7,22 @@
 #ifndef _FCITX_CONFIG_OPTION_H_
 #define _FCITX_CONFIG_OPTION_H_
 
-#include "fcitxconfig_export.h"
-
+#include <algorithm>
 #include <limits>
+#include <memory>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
+#include <vector>
+#include <fcitx-config/fcitxconfig_export.h>
 #include <fcitx-config/marshallfunction.h>
-#include <fcitx-config/option_details.h>
+#include <fcitx-config/option_details.h> // IWYU pragma: export
 #include <fcitx-config/optiontypename.h>
 #include <fcitx-config/rawconfig.h>
+#include <fcitx-utils/flags.h>
+#include <fcitx-utils/key.h>
 
 namespace fcitx {
 
@@ -55,15 +62,15 @@ public:
 template <typename T>
 struct NoConstrain {
     using Type = T;
-    bool check(const T &) const { return true; }
-    void dumpDescription(RawConfig &) const {}
+    bool check(const T & /*unused*/) const { return true; }
+    void dumpDescription(RawConfig & /*unused*/) const {}
 };
 
 /// Default Annotation with no options.
 struct NoAnnotation {
     bool skipDescription() { return false; }
     bool skipSave() { return false; }
-    void dumpDescription(RawConfig &) const {}
+    void dumpDescription(RawConfig & /*unused*/) const {}
 };
 
 /// Annotation to display a tooltip in configtool.
@@ -101,7 +108,7 @@ private:
 struct FontAnnotation {
     bool skipDescription() { return false; }
     bool skipSave() { return false; }
-    void dumpDescription(RawConfig &config) {
+    void dumpDescription(RawConfig &config) const {
         config.setValueByPath("Font", "True");
     }
 };
@@ -130,7 +137,7 @@ struct EnumAnnotation {
 struct HideInDescription {
     bool skipDescription() { return true; }
     bool skipSave() { return false; }
-    void dumpDescription(RawConfig &) const {}
+    void dumpDescription(RawConfig & /*unused*/) const {}
 };
 
 template <typename Annotation>
@@ -151,13 +158,37 @@ struct ListConstrain {
     using ElementType = typename SubConstrain::Type;
     using Type = std::vector<ElementType>;
     bool check(const Type &value) {
-        return std::all_of(
-            value.begin(), value.end(),
-            [this](const ElementType &ele) { return sub_.check(ele); });
+        return std::ranges::all_of(
+            value, [this](const ElementType &ele) { return sub_.check(ele); });
     }
 
     void dumpDescription(RawConfig &config) const {
         sub_.dumpDescription(*config.get("ListConstrain", true));
+    }
+
+private:
+    SubConstrain sub_;
+};
+
+/**
+ * Optional Constrain that applies the constrain only when the value is not
+ * std::nullopt.
+ */
+template <typename SubConstrain>
+struct OptionalConstrain {
+    OptionalConstrain(SubConstrain sub = SubConstrain())
+        : sub_(std::move(sub)) {}
+
+    using ElementType = typename SubConstrain::Type;
+    using Type = std::optional<ElementType>;
+    bool check(const Type &value) {
+        if (!value) {
+            return true;
+        }
+        return sub_.check(*value);
+    }
+    void dumpDescription(RawConfig &config) const {
+        sub_.dumpDescription(*config.get("OptionalConstrain", true));
     }
 
 private:
@@ -184,6 +215,20 @@ public:
 private:
     int min_;
     int max_;
+};
+
+/**
+ * String constrain that requires the value to be a valid regular expression.
+ * Use it directly on a String option, or wrapped in ListConstrain for a list
+ * of regular expressions. Frontends that understand the IsRegex marker can
+ * validate the value before saving, while other frontends simply treat it as a
+ * plain string and rely on this constrain to reject invalid values on save.
+ */
+class FCITXCONFIG_EXPORT RegexConstrain {
+public:
+    using Type = std::string;
+    bool check(const std::string &value) const;
+    void dumpDescription(RawConfig &config) const;
 };
 
 /// Key option constrain flag.
@@ -276,6 +321,18 @@ private:
     value_type value_;
 };
 
+template <typename Constrain, typename Marshaller, typename Annotation,
+          typename T>
+struct OptionParameters {
+    Configuration *parent;
+    std::string path;
+    std::string description;
+    T defaultValue;
+    Constrain constrain{};
+    Marshaller marshaller{};
+    Annotation annotation{};
+};
+
 /**
  * Represent a Configuration option.
  *
@@ -287,6 +344,8 @@ class Option : public OptionBaseV3 {
 public:
     using value_type = T;
     using constrain_type = Constrain;
+    using OptionParametersType =
+        OptionParameters<Constrain, Marshaller, Annotation, T>;
 
     Option(Configuration *parent, std::string path, std::string description,
            const T &defaultValue = T(), Constrain constrain = Constrain(),
@@ -302,11 +361,17 @@ public:
         }
     }
 
+    Option(OptionParametersType params)
+        : Option(params.parent, std::move(params.path),
+                 std::move(params.description), std::move(params.defaultValue),
+                 std::move(params.constrain), std::move(params.marshaller),
+                 std::move(params.annotation)) {}
+
     std::string typeString() const override { return OptionTypeName<T>::get(); }
 
     void dumpDescription(RawConfig &config) const override {
         OptionBase::dumpDescription(config);
-        if constexpr (not std::is_base_of_v<Configuration, T>) {
+        if constexpr (!std::is_base_of_v<Configuration, T>) {
             marshaller_.marshall(config["DefaultValue"], defaultValue_);
         }
         constrain_.dumpDescription(config);
@@ -416,9 +481,14 @@ template <typename T, typename Annotation>
 using OptionWithAnnotation =
     Option<T, NoConstrain<T>, DefaultMarshaller<T>, Annotation>;
 
+/// Shorthand if you want a option type with only custom annotation.
+template <typename Annotation>
+using KeyListOptionWithAnnotation =
+    Option<KeyList, ListConstrain<KeyConstrain>, DefaultMarshaller<KeyList>,
+           Annotation>;
+
 /// Shorthand for KeyList option with constrain.
-using KeyListOption = Option<KeyList, ListConstrain<KeyConstrain>,
-                             DefaultMarshaller<KeyList>, NoAnnotation>;
+using KeyListOption = KeyListOptionWithAnnotation<NoAnnotation>;
 
 /// Shorthand for create a key list constrain.
 static inline ListConstrain<KeyConstrain>
@@ -448,6 +518,21 @@ template <typename T, typename Constrain, typename Marshaller,
 struct ConditionalHiddenHelper<true,
                                Option<T, Constrain, Marshaller, Annotation>> {
     using OptionType = HiddenOption<T, Constrain, Marshaller, Annotation>;
+};
+
+template <>
+struct ConditionalHiddenHelper<false, SubConfigOption> {
+    using OptionType = SubConfigOption;
+};
+
+template <>
+struct ConditionalHiddenHelper<true, SubConfigOption> {
+    class HiddenSubConfigOption : public SubConfigOption {
+    public:
+        using SubConfigOption::SubConfigOption;
+        bool skipDescription() const override { return true; }
+    };
+    using OptionType = HiddenSubConfigOption;
 };
 
 template <bool hidden, typename T>

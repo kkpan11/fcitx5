@@ -37,43 +37,42 @@
 # 32    unihan strings begin
 # 36    unihan offsets begin
 #
-# The string parts always contain all strings in a row, followed by a 0x00 byte.
-# There is one exception: The data for seeAlso in details is only 2 bytes (as is always is _one_
-# unicode character) and _not_ followed by a 0x00 byte.
+# The string parts contain strings followed by a 0x00 byte. The See Also data
+# in details is stored in the same area as consecutive uint32 code points
+# without 0x00 terminators.
 #
-# The offset parts contain entries with a fixed length. Unicode characters are always uint16 and offsets uint32.
-# Offsets are positions in the data file.
+# The offset parts contain entries with a fixed length. Unicode code points and
+# offsets are uint32. Offsets are positions in the data file.
 #
 # names_offsets:
-# each entry 6 bytes
-# 16bit: unicode
+# each entry 8 bytes
+# 32bit: unicode
 # 32bit: offset to name in names_strings
 #
 # names_strings:
 # the first byte is the category (same values as QChar::Category),
 # directly followed by the character name (terminated by 0x00)
 #
-# nameslist_offsets:
-# char, alias, alias_count, note, note_count, approxEquiv, approxEquiv_coutn, equiv, equiv_count, seeAlso, seeAlso_count
-# 16    32     8            32    8           32           8                  32     8            32       8
-# => each entry 27 bytes
+# details_offsets:
+# char, alias, alias_count, note, note_count, approxEquiv, approxEquiv_count, equiv, equiv_count, seeAlso, seeAlso_count
+# 32    32     8            32    8           32           8                  32     8            32       8
+# => each entry 29 bytes
 #
 # blocks_offsets:
-# each entry 4 bytes
-# 16bit: start unicode
-# 16bit: end unicode
+# each entry 8 bytes
+# 32bit: start unicode
+# 32bit: end unicode
 # Note that there is no string offset.
 #
 # section_offsets:
-# each entry 4 bytes
-# 16bit: section offset
-# 16bit: block offset
-# Note that these offsets are _not_ positions in the data file but indexes.
-# For example 0x0403 means the fourth section includes the third block.
+# each entry 8 bytes
+# 32bit: section index
+# 32bit: block index
+# These values are indexes, not positions in the data file.
 #
 # unihan_offsets:
-# each entry 30 bytes
-# 16bit: unicode
+# each entry 32 bytes
+# 32bit: unicode
 # 32bit: offset to unihan_strings for Definition
 # 32bit: offset to unihan_strings for Cantonese
 # 32bit: offset to unihan_strings for Mandarin
@@ -91,15 +90,19 @@ import io
 sectiondata = '''
 SECTION European Scripts
 Armenian
+Carian
 Caucasian Albanian
 Cypriot Syllabary
+Cypro-Minoan
 Cyrillic
 Cyrillic Supplement
 Cyrillic Extended-A
 Cyrillic Extended-B
 Cyrillic Extended-C
+Cyrillic Extended-D
 Elbasan
 Georgian
+Georgian Extended
 Georgian Supplement
 Glagolitic
 Glagolitic Supplement
@@ -114,6 +117,8 @@ Latin Extended-B
 Latin Extended-C
 Latin Extended-D
 Latin Extended-E
+Latin Extended-F
+Latin Extended-G
 Latin Extended Additional
 IPA Extensions
 Phonetic Extensions
@@ -122,6 +127,8 @@ Linear A
 Linear B Syllabary
 Linear B Ideograms
 Aegean Numbers
+Lycian
+Lydian
 Ogham
 Old Hungarian
 Old Italic
@@ -129,6 +136,8 @@ Old Permic
 Phaistos Disc
 Runic
 Shavian
+Todhri
+Vithkuqi
 
 SECTION Modifier Letters
 Modifier Tone Letters
@@ -142,6 +151,10 @@ Combining Diacritical Marks Supplement
 Combining Diacritical Marks for Symbols
 Combining Half Marks
 
+SECTION Miscellaneous
+Alphabetic Presentation Forms
+Halfwidth and Fullwidth Forms
+
 SECTION African Scripts
 Adlam
 Bamum
@@ -150,10 +163,15 @@ Bassa Vah
 Coptic
 Coptic Epact Numbers
 Egyptian Hieroglyphs
+Egyptian Hieroglyph Format Controls
+Egyptian Hieroglyphs Extended-A
 Ethiopic
 Ethiopic Supplement
 Ethiopic Extended
 Ethiopic Extended-A
+Ethiopic Extended-B
+Garay
+Medefaidrin
 Mende Kikakui
 Meroitic Cursive
 Meroitic Hieroglyphs
@@ -167,20 +185,21 @@ Anatolian Hieroglyphs
 Arabic
 Arabic Supplement
 Arabic Extended-A
+Arabic Extended-B
+Arabic Extended-C
 Arabic Presentation Forms-A
 Arabic Presentation Forms-B
 Imperial Aramaic
 Avestan
-Carian
+Chorasmian
 Cuneiform
 Cuneiform Numbers and Punctuation
 Early Dynastic Cuneiform
 Old Persian
 Ugaritic
+Elymaic
 Hatran
 Hebrew
-Lycian
-Lydian
 Mandaic
 Nabataean
 Old North Arabian
@@ -192,15 +211,22 @@ Inscriptional Parthian
 Phoenician
 Samaritan
 Syriac
+Syriac Supplement
+Yezidi
 
 SECTION Central Asian Scripts
 Manichaean
 Marchen
 Mongolian
 Mongolian Supplement
+Old Sogdian
 Old Turkic
+Old Uyghur
 Phags-pa
+Sogdian
+Soyombo
 Tibetan
+Zanabazar Square
 
 SECTION South Asian Scripts
 Ahom
@@ -210,25 +236,35 @@ Brahmi
 Chakma
 Devanagari
 Devanagari Extended
+Devanagari Extended-A
+Dives Akuru
+Dogra
 Grantha
 Gujarati
+Gunjala Gondi
 Gurmukhi
+Gurung Khema
 Kaithi
 Kannada
 Kharoshthi
 Khojki
+Kirat Rai
 Khudawadi
 Lepcha
 Limbu
 Mahajani
 Malayalam
+Masaram Gondi
 Meetei Mayek
 Meetei Mayek Extensions
 Modi
 Mro
 Multani
+Nag Mundari
+Nandinagari
 Newa
 Ol Chiki
+Ol Onal
 Oriya
 Saurashtra
 Sharada
@@ -236,17 +272,23 @@ Siddham
 Sinhala
 Sinhala Archaic Numbers
 Sora Sompeng
+Sunuwar
 Syloti Nagri
 Takri
 Tamil
+Tamil Supplement
 Telugu
 Thaana
 Tirhuta
+Toto
+Tulu-Tigalari
 Vedic Extensions
+Wancho
 Warang Citi
 
 SECTION Southeast Asian Scripts
 Cham
+Hanifi Rohingya
 Kayah Li
 Khmer
 Khmer Symbols
@@ -254,12 +296,15 @@ Lao
 Myanmar
 Myanmar Extended-A
 Myanmar Extended-B
+Myanmar Extended-C
 New Tai Lue
+Nyiakeng Puachue Hmong
 Pahawh Hmong
 Pau Cin Hau
 Tai Le
 Tai Tham
 Tai Viet
+Tangsa
 Thai
 
 SECTION Indonesia &amp; Oceania Scripts
@@ -269,6 +314,8 @@ Buginese
 Buhid
 Hanunoo
 Javanese
+Kawi
+Makasar
 Rejang
 Sundanese
 Sundanese Supplement
@@ -284,6 +331,10 @@ CJK Unified Ideographs Extension B
 CJK Unified Ideographs Extension C
 CJK Unified Ideographs Extension D
 CJK Unified Ideographs Extension E
+CJK Unified Ideographs Extension F
+CJK Unified Ideographs Extension G
+CJK Unified Ideographs Extension H
+CJK Unified Ideographs Extension I
 CJK Compatibility Ideographs
 CJK Compatibility Ideographs Supplement
 Kangxi Radicals
@@ -296,14 +347,21 @@ Hangul Jamo Extended-B
 Hangul Compatibility Jamo
 Hangul Syllables
 Hiragana
+Kana Extended-A
+Kana Extended-B
+Kana Supplement
+Small Kana Extension
+Kanbun
 Katakana
 Katakana Phonetic Extensions
-Kana Supplement
-Kanbun
+Khitan Small Script
 Lisu
+Lisu Supplement
 Miao
+Nushu
 Tangut
 Tangut Components
+Tangut Supplement
 Yi Syllables
 Yi Radicals
 
@@ -314,16 +372,14 @@ Deseret
 Osage
 Unified Canadian Aboriginal Syllabics
 Unified Canadian Aboriginal Syllabics Extended
-
-SECTION Other
-Alphabetic Presentation Forms
-Halfwidth and Fullwidth Forms
+Unified Canadian Aboriginal Syllabics Extended-A
 
 SECTION Notational Systems
 Braille Patterns
 Musical Symbols
 Ancient Greek Musical Notation
 Byzantine Musical Symbols
+Znamenny Musical Notation
 Duployan
 Shorthand Format Controls
 Sutton SignWriting
@@ -358,7 +414,11 @@ Common Indic Number Forms
 Coptic Epact Numbers
 Counting Rod Numerals
 Cuneiform Numbers and Punctuation
+Indic Siyaq Numbers
+Kaktovik Numerals
+Mayan Numerals
 Number Forms
+Ottoman Siyaq Numbers
 Rumi Numeral Symbols
 Sinhala Archaic Numbers
 
@@ -387,16 +447,20 @@ Emoticons
 Miscellaneous Symbols
 Miscellaneous Symbols and Pictographs
 Supplemental Symbols and Pictographs
+Symbols and Pictographs Extended-A
 Transport and Map Symbols
 
 SECTION Other Symbols
 Alchemical Symbols
 Ancient Symbols
 Currency Symbols
+Chess Symbols
 Domino Tiles
 Mahjong Tiles
 Playing Cards
 Miscellaneous Symbols and Arrows
+Symbols for Legacy Computing
+Symbols for Legacy Computing Supplement
 Yijing Hexagram Symbols
 Tai Xuan Jing Symbols
 

@@ -6,7 +6,10 @@
  */
 
 #include "waylandpointer.h"
+#include <cstdint>
+#include <wayland-util.h>
 #include "waylandwindow.h"
+#include "wl_seat.h"
 #include "wl_surface.h"
 
 namespace fcitx::classicui {
@@ -43,7 +46,6 @@ void WaylandPointer::initPointer() {
         pointerFocus_ = window->watch();
         pointerFocusX_ = wl_fixed_to_int(sx);
         pointerFocusY_ = wl_fixed_to_int(sy);
-        window->hover()(pointerFocusX_, pointerFocusY_);
     });
     pointer_->leave().connect([this](uint32_t, wayland::WlSurface *surface) {
         if (auto *window = pointerFocus_.get()) {

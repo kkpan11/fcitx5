@@ -6,9 +6,24 @@
  */
 
 #include "xcbinputwindow.h"
+#include <unistd.h>
+#include <algorithm>
+#include <climits>
+#include <cstdint>
+#include <vector>
+#include <cairo.h>
+#include <xcb/xcb.h>
 #include <xcb/xcb_aux.h>
+#include <xcb/xcb_ewmh.h>
 #include <xcb/xcb_icccm.h>
+#include <xcb/xproto.h>
 #include "fcitx-utils/rect.h"
+#include "fcitx/inputcontext.h"
+#include "inputwindow.h"
+#include "theme.h"
+#include "xcb_public.h"
+#include "xcbui.h"
+#include "xcbwindow.h"
 
 namespace fcitx::classicui {
 
@@ -18,10 +33,10 @@ XCBInputWindow::XCBInputWindow(XCBUI *ui)
           ui_->displayName(), "_KDE_NET_WM_BLUR_BEHIND_REGION", false)) {}
 
 void XCBInputWindow::postCreateWindow() {
-    if (ui_->ewmh()->_NET_WM_WINDOW_TYPE_POPUP_MENU &&
+    if (ui_->ewmh()->_NET_WM_WINDOW_TYPE_COMBO &&
         ui_->ewmh()->_NET_WM_WINDOW_TYPE) {
-        xcb_ewmh_set_wm_window_type(
-            ui_->ewmh(), wid_, 1, &ui_->ewmh()->_NET_WM_WINDOW_TYPE_POPUP_MENU);
+        xcb_ewmh_set_wm_window_type(ui_->ewmh(), wid_, 1,
+                                    &ui_->ewmh()->_NET_WM_WINDOW_TYPE_COMBO);
     }
 
     if (ui_->ewmh()->_NET_WM_PID) {
@@ -40,66 +55,83 @@ void XCBInputWindow::postCreateWindow() {
             XCB_EVENT_MASK_LEAVE_WINDOW);
 }
 
-void XCBInputWindow::updatePosition(InputContext *inputContext) {
-    if (!visible()) {
-        return;
-    }
-    int x, y, h;
-
-    // add support of input panel offset here.
-    // TODO: RTL support.
-    auto &theme = parent_->theme();
-    int leftSW, rightSW, topSW, bottomSW, actualWidth, actualHeight;
-    leftSW = theme.inputPanel->shadowMargin->marginLeft.value();
-    rightSW = theme.inputPanel->shadowMargin->marginRight.value();
-    topSW = theme.inputPanel->shadowMargin->marginTop.value();
-    bottomSW = theme.inputPanel->shadowMargin->marginBottom.value();
-
-    x = inputContext->cursorRect().left();
-    y = inputContext->cursorRect().top();
-    h = inputContext->cursorRect().height();
-
-    actualWidth = width() - leftSW - rightSW;
-    actualWidth = actualWidth <= 0 ? width() : actualWidth;
-    actualHeight = height() - topSW - bottomSW;
-    actualHeight = actualHeight <= 0 ? height() : actualHeight;
-
+const Rect *XCBInputWindow::getClosestScreen(const Rect &cursorRect) const {
     const Rect *closestScreen = nullptr;
+
     int shortestDistance = INT_MAX;
     for (const auto &rect : ui_->screenRects()) {
-        int thisDistance = rect.first.distance(x, y);
+        int thisDistance =
+            rect.first.distance(cursorRect.left(), cursorRect.top());
         if (thisDistance < shortestDistance) {
             shortestDistance = thisDistance;
             closestScreen = &rect.first;
         }
     }
 
-    if (closestScreen) {
-        int newX;
+    return closestScreen;
+}
 
-        if (x < closestScreen->left()) {
-            newX = closestScreen->left();
-        } else {
-            newX = x;
-        }
+int XCBInputWindow::calculatePositionX(const Rect &cursorRect,
+                                       const Rect *closestScreen) const {
+    // TODO: RTL support.
+    int x = cursorRect.left();
 
-        if ((newX + static_cast<int>(actualWidth)) > closestScreen->right()) {
+    auto &theme = parent_->theme();
+    int leftSW =
+        physicalFromLogical(theme.inputPanel->shadowMargin->marginLeft.value());
+    int rightSW = physicalFromLogical(
+        theme.inputPanel->shadowMargin->marginRight.value());
+
+    int actualWidth = physicalWidth_ - leftSW - rightSW;
+    actualWidth = actualWidth <= 0 ? physicalWidth_ : actualWidth;
+
+    if (closestScreen != nullptr) {
+        int newX = std::max(x, closestScreen->left());
+
+        if (newX + actualWidth > closestScreen->right()) {
             newX = closestScreen->right() - actualWidth;
         }
 
+        x = std::max(newX, closestScreen->left());
+    }
+
+    // exclude shadow border width
+    x -= leftSW;
+
+    return x;
+}
+
+int XCBInputWindow::calculatePositionY(const Rect &cursorRect,
+                                       const Rect *closestScreen) const {
+    // TODO: RTL support.
+    int y = cursorRect.top();
+
+    auto &theme = parent_->theme();
+    int topSW =
+        physicalFromLogical(theme.inputPanel->shadowMargin->marginTop.value());
+    int bottomSW = physicalFromLogical(
+        theme.inputPanel->shadowMargin->marginBottom.value());
+
+    int actualHeight = physicalHeight_ - topSW - bottomSW;
+    actualHeight = actualHeight <= 0 ? physicalHeight_ : actualHeight;
+
+    if (closestScreen != nullptr) {
+        int h = cursorRect.height();
         int newY;
         if (y < closestScreen->top()) {
             newY = closestScreen->top();
         } else {
-            newY = y + (h ? h : (10 * ((dpi_ < 0 ? 96.0 : dpi_) / 96.0)));
+            newY = y + (h ? h : physicalFromLogical(10));
         }
 
         // Try flip y.
-        if ((newY + static_cast<int>(actualHeight)) > closestScreen->bottom()) {
+        if (newY + actualHeight > closestScreen->bottom()) {
             if (newY > closestScreen->bottom()) {
-                newY = closestScreen->bottom() - actualHeight - 40;
+                newY = closestScreen->bottom() - actualHeight -
+                       physicalFromLogical(40);
             } else { /* better position the window */
-                newY = newY - actualHeight - ((h == 0) ? 40 : h);
+                newY = newY - actualHeight -
+                       ((h == 0) ? physicalFromLogical(40) : h);
             }
 
             // If after flip, top is out of the screen, we still prefer the top
@@ -109,17 +141,25 @@ void XCBInputWindow::updatePosition(InputContext *inputContext) {
             }
         }
 
-        x = newX;
         y = newY;
     }
 
     // exclude shadow border width
-    x -= leftSW;
     y -= topSW;
 
+    return y;
+}
+
+void XCBInputWindow::updatePosition(InputContext *inputContext) {
+    if (!visible()) {
+        return;
+    }
+
+    const Rect &cursorRect = inputContext->cursorRect();
+    const Rect *closestScreen = getClosestScreen(cursorRect);
     xcb_params_configure_window_t wc;
-    wc.x = x;
-    wc.y = y;
+    wc.x = calculatePositionX(cursorRect, closestScreen);
+    wc.y = calculatePositionY(cursorRect, closestScreen);
     wc.stack_mode = XCB_STACK_MODE_ABOVE;
     xcb_aux_configure_window(ui_->connection(), wid_,
                              XCB_CONFIG_WINDOW_STACK_MODE |
@@ -128,10 +168,9 @@ void XCBInputWindow::updatePosition(InputContext *inputContext) {
 }
 
 void XCBInputWindow::updateDPI(InputContext *inputContext) {
-    dpi_ = ui_->dpiByPosition(inputContext->cursorRect().left(),
-                              inputContext->cursorRect().top());
-
-    setFontDPI(dpi_);
+    auto dpi = ui_->dpiByPosition(inputContext->cursorRect().left(),
+                                  inputContext->cursorRect().top());
+    setScale(scaleForDPI(dpi));
 }
 
 void XCBInputWindow::update(InputContext *inputContext) {
@@ -146,19 +185,24 @@ void XCBInputWindow::update(InputContext *inputContext) {
     if (!visible()) {
         if (oldVisible) {
             xcb_unmap_window(ui_->connection(), wid_);
+            hoverIndex_ = -1;
         }
         return;
     }
 
-    if (width != this->width() || height != this->height()) {
-        resize(width, height);
+    auto oldPhysicalWidth = physicalWidth_;
+    auto oldPhysicalHeight = physicalHeight_;
+    resize(width, height);
+    if (physicalWidth_ != oldPhysicalWidth ||
+        physicalHeight_ != oldPhysicalHeight) {
         if (atomBlur_) {
-            Rect rect(0, 0, width, height);
-            shrink(rect, *ui_->parent()->theme().inputPanel->blurMargin);
+            Rect logicalRect(0, 0, width, height);
+            shrink(logicalRect, *ui_->parent()->theme().inputPanel->blurMargin);
             if (!*ui_->parent()->theme().inputPanel->enableBlur ||
-                rect.isEmpty()) {
+                logicalRect.isEmpty()) {
                 xcb_delete_property(ui_->connection(), wid_, atomBlur_);
             } else {
+                auto rect = physicalFromLogical(logicalRect);
                 std::vector<uint32_t> data;
                 if (ui_->parent()->theme().inputPanel->blurMask->empty()) {
                     data.push_back(rect.left());
@@ -173,10 +217,11 @@ void XCBInputWindow::update(InputContext *inputContext) {
                     auto region = parent_->theme().mask(
                         parent_->theme().maskConfig(), width, height);
                     for (const auto &rect : region) {
-                        data.push_back(rect.left());
-                        data.push_back(rect.top());
-                        data.push_back(rect.width());
-                        data.push_back(rect.height());
+                        auto physicalRect = physicalFromLogical(rect);
+                        data.push_back(physicalRect.left());
+                        data.push_back(physicalRect.top());
+                        data.push_back(physicalRect.width());
+                        data.push_back(physicalRect.height());
                     }
                     xcb_change_property(ui_->connection(),
                                         XCB_PROP_MODE_REPLACE, wid_, atomBlur_,
@@ -187,20 +232,16 @@ void XCBInputWindow::update(InputContext *inputContext) {
         }
     }
 
-    cairo_t *c = cairo_create(prerender());
     updatePosition(inputContext);
+    repaint();
     if (!oldVisible) {
         xcb_map_window(ui_->connection(), wid_);
     }
-    paint(c, width, height, /*scale=*/1.0);
-    cairo_destroy(c);
-    render();
 }
 
 bool XCBInputWindow::filterEvent(xcb_generic_event_t *event) {
     uint8_t response_type = event->response_type & ~0x80;
     switch (response_type) {
-
     case XCB_EXPOSE: {
         auto *expose = reinterpret_cast<xcb_expose_event_t *>(event);
         if (expose->window == wid_) {
@@ -215,7 +256,8 @@ bool XCBInputWindow::filterEvent(xcb_generic_event_t *event) {
             break;
         }
         if (buttonPress->detail == XCB_BUTTON_INDEX_1) {
-            click(buttonPress->event_x, buttonPress->event_y);
+            click(logicalFromPhysical(buttonPress->event_x),
+                  logicalFromPhysical(buttonPress->event_y));
         } else if (buttonPress->detail == XCB_BUTTON_INDEX_4) {
             wheel(/*up=*/true);
         } else if (buttonPress->detail == XCB_BUTTON_INDEX_5) {
@@ -226,7 +268,8 @@ bool XCBInputWindow::filterEvent(xcb_generic_event_t *event) {
     case XCB_MOTION_NOTIFY: {
         auto *motion = reinterpret_cast<xcb_motion_notify_event_t *>(event);
         if (motion->event == wid_) {
-            if (hover(motion->event_x, motion->event_y)) {
+            if (hover(logicalFromPhysical(motion->event_x),
+                      logicalFromPhysical(motion->event_y))) {
                 repaint();
             }
             return true;
@@ -243,6 +286,8 @@ bool XCBInputWindow::filterEvent(xcb_generic_event_t *event) {
         }
         break;
     }
+    default:
+        break;
     }
     return false;
 }
@@ -253,7 +298,9 @@ void XCBInputWindow::repaint() {
     }
     if (auto *surface = prerender()) {
         cairo_t *c = cairo_create(surface);
-        paint(c, width(), height(), /*scale=*/1.0);
+        auto surfaceWidth = cairo_image_surface_get_width(surface);
+        auto surfaceHeight = cairo_image_surface_get_height(surface);
+        paint(c, surfaceWidth / scale_, surfaceHeight / scale_);
         cairo_destroy(c);
         render();
     }

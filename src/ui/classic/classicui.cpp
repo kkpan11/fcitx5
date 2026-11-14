@@ -7,24 +7,50 @@
 
 #include "classicui.h"
 #include <fcntl.h>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <map>
+#include <memory>
 #include <optional>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+#include <cairo.h>
 #include "fcitx-config/iniparser.h"
+#include "fcitx-config/rawconfig.h"
+#include "fcitx-utils/color.h"
 #include "fcitx-utils/dbus/message_details.h"
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/fs.h"
+#include "fcitx-utils/i18n.h"
+#include "fcitx-utils/log.h"
+#include "fcitx-utils/misc.h"
 #include "fcitx-utils/misc_p.h"
-#include "fcitx-utils/standardpath.h"
+#include "fcitx-utils/standardpaths.h"
+#include "fcitx/addonfactory.h"
+#include "fcitx/addoninstance.h"
 #include "fcitx/event.h"
 #include "fcitx/inputcontext.h"
 #include "fcitx/inputcontextmanager.h"
 #include "fcitx/instance.h"
+#include "fcitx/userinterface.h"
 #include "common.h"
 #include "notificationitem_public.h"
 #include "plasmathemewatchdog.h"
+#include "theme.h"
 #ifdef ENABLE_X11
+#include <xcb/xcb.h>
+#include "xcb_public.h"
 #include "xcbui.h"
 #endif
 #ifdef WAYLAND_FOUND
+#include "wayland_public.h"
 #include "waylandui.h"
 #endif
 #ifdef ENABLE_DBUS
@@ -40,9 +66,8 @@ FCITX_DEFINE_LOG_CATEGORY(classicui_logcategory, "classicui");
 using AccentColorDBusType = FCITX_STRING_TO_DBUS_TYPE("(ddd)");
 
 ClassicUI::ClassicUI(Instance *instance) : instance_(instance) {
-
 #ifdef ENABLE_DBUS
-    if (auto dbusAddon = dbus()) {
+    if (auto *dbusAddon = dbus()) {
         dbus::VariantTypeRegistry::defaultRegistry()
             .registerType<AccentColorDBusType>();
         settingMonitor_ = std::make_unique<PortalSettingMonitor>(
@@ -108,7 +133,7 @@ ClassicUI::ClassicUI(Instance *instance) : instance_(instance) {
             auto &focusEvent =
                 static_cast<FocusGroupFocusChangedEvent &>(event);
             if (!focusEvent.newFocus()) {
-                if (auto ui = uiForDisplay(focusEvent.group()->display())) {
+                if (auto *ui = uiForDisplay(focusEvent.group()->display())) {
                     ui->update(UserInterfaceComponent::InputPanel, nullptr);
                 }
             }
@@ -239,20 +264,20 @@ void ClassicUI::suspend() {
 }
 
 const Configuration *ClassicUI::getConfig() const {
-    std::set<std::string> themeDirs;
-    StandardPath::global().scanFiles(
-        StandardPath::Type::PkgData, "themes",
-        [&themeDirs](const std::string &path, const std::string &dir, bool) {
-            if (fs::isdir(stringutils::joinPath(dir, path))) {
-                themeDirs.insert(path);
-            }
-            return true;
+    auto themeDirs = StandardPaths::global().locate(
+        StandardPathsType::PkgData, "themes",
+        [](const std::filesystem::path &path) {
+            std::error_code ec;
+            return std::filesystem::is_directory(path, ec);
         });
     std::map<std::string, std::string, std::less<>> themes;
-    for (const auto &themeName : themeDirs) {
-        auto file = StandardPath::global().open(
-            StandardPath::Type::PkgData,
-            stringutils::joinPath("themes", themeName, "theme.conf"), O_RDONLY);
+    for (const auto &[themeName, _] : themeDirs) {
+        auto file = StandardPaths::global().open(
+            StandardPathsType::PkgData,
+            std::filesystem::path("themes") / themeName / "theme.conf",
+            Theme::isSystemThemeName(themeName.string())
+                ? StandardPathsMode::System
+                : StandardPathsMode::Default);
         if (file.fd() < 0) {
             continue;
         }
@@ -400,7 +425,7 @@ void ClassicUI::resume() {
             auto &focusEvent =
                 static_cast<FocusGroupFocusChangedEvent &>(event);
             if (!focusEvent.newFocus()) {
-                if (auto ui = uiForDisplay(focusEvent.group()->display())) {
+                if (auto *ui = uiForDisplay(focusEvent.group()->display())) {
                     ui->update(UserInterfaceComponent::InputPanel, nullptr);
                 }
             }
@@ -410,8 +435,8 @@ void ClassicUI::resume() {
 void ClassicUI::update(UserInterfaceComponent component,
                        InputContext *inputContext) {
     UIInterface *ui = nullptr;
-    if (stringutils::startsWith(inputContext->display(), "wayland:") &&
-        !stringutils::startsWith(inputContext->frontendName(), "wayland")) {
+    if (inputContext->display().starts_with("wayland:") &&
+        !inputContext->frontendName().starts_with("wayland")) {
         // If display is wayland, but frontend is not, then we can only do X11
         // for now, though position is wrong. We don't know which is xwayland
         // unfortunately, hopefully main display is X wayland.
@@ -454,12 +479,12 @@ public:
 
 const fcitx::Configuration *
 ClassicUI::getSubConfig(const std::string &path) const {
-    if (!stringutils::startsWith(path, "theme/")) {
+    if (!path.starts_with("theme/")) {
         return nullptr;
     }
 
     auto name = path.substr(6);
-    if (name.empty()) {
+    if (!ThemeNameConstrain{}.check(name)) {
         return nullptr;
     }
 
@@ -469,11 +494,15 @@ ClassicUI::getSubConfig(const std::string &path) const {
 
 void ClassicUI::setSubConfig(const std::string &path,
                              const fcitx::RawConfig &config) {
-    if (!stringutils::startsWith(path, "theme/")) {
+    if (!path.starts_with("theme/")) {
         return;
     }
     auto name = path.substr(6);
-    if (name.empty()) {
+    if (!ThemeNameConstrain{}.check(name)) {
+        return;
+    }
+
+    if (Theme::isSystemThemeName(name)) {
         return;
     }
 
@@ -481,16 +510,18 @@ void ClassicUI::setSubConfig(const std::string &path,
     if (&theme == &subconfigTheme_) {
         // Fill the system value.
         getSubConfig(path);
+    } else {
+        deferedReloadTheme_->setOneShot();
     }
     theme.load(name, config);
-    safeSaveAsIni(theme, StandardPath::Type::PkgData,
-                  stringutils::joinPath("themes", name, "theme.conf"));
+    safeSaveAsIni(theme, StandardPathsType::PkgData,
+                  std::filesystem::path("themes") / name / "theme.conf");
 }
 
 std::vector<unsigned char> ClassicUI::labelIcon(const std::string &label,
                                                 unsigned int size) {
     std::vector<unsigned char> data;
-    auto stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, size);
+    size_t stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, size);
     data.resize(stride * size);
     UniqueCPtr<cairo_surface_t, cairo_surface_destroy> image;
     image.reset(cairo_image_surface_create_for_data(
@@ -508,4 +539,4 @@ bool ClassicUI::showLayoutNameInIcon() const {
 
 } // namespace fcitx::classicui
 
-FCITX_ADDON_FACTORY(fcitx::classicui::ClassicUIFactory);
+FCITX_ADDON_FACTORY_V2(classicui, fcitx::classicui::ClassicUIFactory);

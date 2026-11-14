@@ -4,8 +4,9 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  *
  */
-#include <fcitx-utils/log.h>
-#include <fcitx/text.h>
+#include "fcitx-utils/log.h"
+#include "fcitx-utils/textformatflags.h"
+#include "fcitx/text.h"
 using namespace fcitx;
 
 void test_basic() {
@@ -33,6 +34,14 @@ void test_basic() {
     FCITX_ASSERT(lines[2].toStringForCommit() == "");
     FCITX_ASSERT(lines[3].toStringForCommit() == "Z");
     FCITX_ASSERT(lines[4].toStringForCommit() == "1");
+
+    text = Text("ABC");
+    Text another = Text("DEF", TextFormatFlag::Bold);
+    another.append("GHI", TextFormatFlag::Italic);
+    text.append(another);
+    FCITX_ASSERT(text.toString() == "ABCDEFGHI");
+    FCITX_ASSERT(text.formatAt(1) == TextFormatFlag::Bold);
+    FCITX_ASSERT(text.formatAt(2) == TextFormatFlag::Italic);
 }
 
 void test_normalize() {
@@ -56,6 +65,9 @@ void test_normalize() {
 
     auto normalizedEmpty = empty.normalize();
     FCITX_ASSERT(normalizedEmpty.empty()) << normalizedEmpty;
+
+    Text invalid("\x8e\x30\xe4\xb8\x87");
+    FCITX_ASSERT(invalid.toString(), "?0万");
 }
 
 int main() {

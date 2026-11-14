@@ -6,20 +6,55 @@
  */
 
 #include "keyboard.h"
+#include <strings.h>
 #include <algorithm>
-#include <fmt/format.h>
+#include <cstddef>
+#include <filesystem>
+#include <functional>
+#include <iterator>
+#include <memory>
+#include <optional>
+#include <set>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <utility>
+#include <vector>
+#include <format>
+#include <span>
 #include <xkbcommon/xkbcommon.h>
 #include "fcitx-config/iniparser.h"
+#include "fcitx-config/rawconfig.h"
+#include "fcitx-utils/capabilityflags.h"
+#include "fcitx-utils/event.h"
+#include "fcitx-utils/eventloopinterface.h"
 #include "fcitx-utils/i18n.h"
+#include "fcitx-utils/key.h"
+#include "fcitx-utils/keysym.h"
+#include "fcitx-utils/keysymgen.h"
+#include "fcitx-utils/log.h"
+#include "fcitx-utils/macros.h"
+#include "fcitx-utils/misc.h"
+#include "fcitx-utils/misc_p.h"
 #include "fcitx-utils/stringutils.h"
+#include "fcitx-utils/textformatflags.h"
 #include "fcitx-utils/utf8.h"
+#include "fcitx/addoninstance.h"
+#include "fcitx/candidatelist.h"
+#include "fcitx/event.h"
+#include "fcitx/inputcontext.h"
 #include "fcitx/inputcontextmanager.h"
 #include "fcitx/inputcontextproperty.h"
 #include "fcitx/inputmethodentry.h"
 #include "fcitx/inputpanel.h"
 #include "fcitx/instance.h"
+#include "fcitx/misc_p.h"
+#include "fcitx/text.h"
+#include "fcitx/userinterface.h"
 #include "chardata.h"
 #include "config.h"
+#include "emoji_public.h"
+#include "isocodes.h"
 #include "longpress.h"
 #include "notifications_public.h"
 #include "quickphrase_public.h"
@@ -29,9 +64,6 @@
 #define FCITX_NO_XCB
 #include "xcb_public.h"
 #endif
-
-#include <fcitx/inputcontext.h>
-#include "emoji_public.h"
 
 const char imNamePrefix[] = "keyboard-";
 #define FCITX_KEYBOARD_MAX_BUFFER 20
@@ -49,7 +81,8 @@ std::string findBestLanguage(const IsoCodes &isocodes, const std::string &hint,
      */
     const IsoCodes639Entry *bestEntry = nullptr;
     int bestScore = 0;
-    for (const auto &language : languages) {
+    for (const auto &language : std::span(languages).subspan(
+             0, std::min(static_cast<size_t>(1), languages.size()))) {
         const auto *entry = isocodes.entry(language);
         if (!entry) {
             continue;
@@ -97,7 +130,7 @@ std::string findBestLanguage(const IsoCodes &isocodes, const std::string &hint,
         }
         return bestEntry->iso_639_2B_code;
     }
-    return {};
+    return languages.empty() ? "" : languages[0];
 }
 
 class KeyboardCandidateWord : public CandidateWord {
@@ -131,7 +164,7 @@ public:
     const std::string &str() const { return text_; }
 
     void select(InputContext *inputContext) const override {
-        auto state = inputContext->propertyFor(engine_->factory());
+        auto *state = inputContext->propertyFor(engine_->factory());
         state->mode_ = CandidateMode::Hint;
         // Make sure the candidate is from not from long press mode.
         inputContext->inputPanel().setCandidateList(nullptr);
@@ -169,7 +202,7 @@ KeyboardEngine::KeyboardEngine(Instance *instance) : instance_(instance) {
         if (!rules[0].empty()) {
             if (rules[0][0] == '/') {
                 extraRuleFile = rules[0];
-                if (!stringutils::endsWith(extraRuleFile, ".xml")) {
+                if (!extraRuleFile.ends_with(".xml")) {
                     extraRuleFile = extraRuleFile + ".xml";
                 }
             } else {
@@ -181,7 +214,7 @@ KeyboardEngine::KeyboardEngine(Instance *instance) : instance_(instance) {
 
     UniqueCPtr<xkb_context, xkb_context_unref> xkbContext(
         xkb_context_new(XKB_CONTEXT_NO_FLAGS));
-    std::vector<std::string> directories;
+    std::vector<std::filesystem::path> directories;
     if (xkbContext) {
         for (unsigned int i = 0,
                           e = xkb_context_num_include_paths(xkbContext.get());
@@ -193,8 +226,13 @@ KeyboardEngine::KeyboardEngine(Instance *instance) : instance_(instance) {
     if (directories.empty()) {
         directories.push_back(XKEYBOARDCONFIG_XKBBASE);
     }
+    FCITX_INFO() << "Attempting to load keyboard from: " << directories
+                 << " Rule: " << DEFAULT_XKB_RULES;
     if (!xkbRules_.read(directories, ruleName, extraRuleFile)) {
-        xkbRules_.read(directories, DEFAULT_XKB_RULES, "");
+        FCITX_WARN() << "Fallback to using compile time rule: "
+                     << XKEYBOARDCONFIG_XKBBASE
+                     << " Rule: " << DEFAULT_XKB_RULES;
+        xkbRules_.read({XKEYBOARDCONFIG_XKBBASE}, DEFAULT_XKB_RULES, "");
     }
 
     instance_->inputContextManager().registerProperty("keyboardState",
@@ -212,7 +250,7 @@ KeyboardEngine::~KeyboardEngine() {}
 
 std::vector<InputMethodEntry> KeyboardEngine::listInputMethods() {
     IsoCodes isoCodes;
-    isoCodes.read(ISOCODES_ISO639_JSON, ISOCODES_ISO3166_JSON);
+    isoCodes.read(ISOCODES_ISO639_JSON);
 
     std::vector<InputMethodEntry> result;
     bool usExists = false;
@@ -220,29 +258,32 @@ std::vector<InputMethodEntry> KeyboardEngine::listInputMethods() {
         const auto &layoutInfo = p.second;
         auto language = findBestLanguage(isoCodes, layoutInfo.description,
                                          layoutInfo.languages);
-        auto description =
-            fmt::format(_("Keyboard - {0}"),
-                        D_("xkeyboard-config", layoutInfo.description));
+        auto description = !layoutInfo.description.empty()
+                               ? D_("xkeyboard-config", layoutInfo.description)
+                               : layoutInfo.name;
+        auto name = _("Keyboard - {0}", description);
         auto uniqueName = imNamePrefix + layoutInfo.name;
         if (uniqueName == "keyboard-us") {
             usExists = true;
         }
-        result.push_back(std::move(
-            InputMethodEntry(uniqueName, description, language, "keyboard")
-                .setLabel(layoutInfo.shortDescription.empty()
-                              ? layoutInfo.name
-                              : layoutInfo.shortDescription)
-                .setIcon("input-keyboard")
-                .setConfigurable(true)));
+        result.push_back(
+            std::move(InputMethodEntry(uniqueName, name, language, "keyboard")
+                          .setLabel(layoutInfo.shortDescription.empty()
+                                        ? layoutInfo.name
+                                        : layoutInfo.shortDescription)
+                          .setIcon("input-keyboard")
+                          .setConfigurable(true)));
         for (const auto &variantInfo : layoutInfo.variantInfos) {
             auto language = findBestLanguage(isoCodes, variantInfo.description,
                                              !variantInfo.languages.empty()
                                                  ? variantInfo.languages
                                                  : layoutInfo.languages);
-            auto description =
-                fmt::format(_("Keyboard - {0} - {1}"),
-                            D_("xkeyboard-config", layoutInfo.description),
-                            D_("xkeyboard-config", variantInfo.description));
+            auto variantDescription =
+                !variantInfo.description.empty()
+                    ? D_("xkeyboard-config", variantInfo.description)
+                    : variantInfo.name;
+            auto name =
+                _("Keyboard - {0} - {1}", description, variantDescription);
             auto uniqueName = stringutils::concat(imNamePrefix, layoutInfo.name,
                                                   "-", variantInfo.name);
 
@@ -255,10 +296,10 @@ std::vector<InputMethodEntry> KeyboardEngine::listInputMethods() {
             // chr. So "chr (chr)" would be redundant in this case.
             if (variantLabel != variantInfo.name) {
                 variantLabel =
-                    fmt::format("{0} ({1})", variantLabel, variantInfo.name);
+                    std::format("{0} ({1})", variantLabel, variantInfo.name);
             }
             result.push_back(std::move(
-                InputMethodEntry(uniqueName, description, language, "keyboard")
+                InputMethodEntry(uniqueName, name, language, "keyboard")
                     .setLabel(variantLabel)
                     .setIcon("input-keyboard")
                     .setConfigurable(true)));
@@ -280,10 +321,9 @@ std::vector<InputMethodEntry> KeyboardEngine::listInputMethods() {
                     usExists = true;
                 }
                 result.push_back(
-                    std::move(InputMethodEntry(
-                                  uniqueName,
-                                  fmt::format(_("{0} (Not Available)"), *desc),
-                                  *lang, "keyboard")
+                    std::move(InputMethodEntry(uniqueName,
+                                               _("{0} (Not Available)", *desc),
+                                               *lang, "keyboard")
                                   .setLabel(*label)
                                   .setIcon("input-keyboard")));
             }
@@ -352,13 +392,13 @@ static inline bool isValidSym(const Key &key) {
         return false;
     }
 
-    return validSyms.count(key.sym());
+    return validSyms.contains(key.sym());
 }
 
 static KeyList FCITX_HYPHEN_APOS = Key::keyListFromString("minus apostrophe");
 
 bool KeyboardEngineState::updateBuffer(std::string_view chr) {
-    auto *entry = engine_->instance()->inputMethodEntry(inputContext_);
+    const auto *entry = engine_->instance()->inputMethodEntry(inputContext_);
     if (!entry) {
         return false;
     }
@@ -399,22 +439,27 @@ void KeyboardEngine::keyEvent(const InputMethodEntry &entry, KeyEvent &event) {
     }
 
     // and by pass all modifier
-    if (event.key().isModifier()) {
+    if (event.key().isModifier() ||
+        event.key().sym() == FcitxKey_ISO_Level3_Shift ||
+        event.key().sym() == FcitxKey_ISO_Level5_Shift) {
         return;
     }
 
     // Always update preedit after key event.
     Finally finally([state]() { state->setPreedit(); });
     if (state->handleLongPress(event)) {
-        return event.filterAndAccept();
+        event.filterAndAccept();
+        return;
     }
 
     if (state->handleSpellModeTrigger(entry, event)) {
-        return event.filterAndAccept();
+        event.filterAndAccept();
+        return;
     }
 
     if (state->handleCandidateSelection(event)) {
-        return event.filterAndAccept();
+        event.filterAndAccept();
+        return;
     }
 
     if (event.key().check(FcitxKey_BackSpace)) {
@@ -424,7 +469,7 @@ void KeyboardEngine::keyEvent(const InputMethodEntry &entry, KeyEvent &event) {
         return;
     }
 
-    // Do not feed key into compose or buffer if it is a combinition key.
+    // Do not feed key into compose or buffer if it is a combination key.
     // Shift/Alt are ignored because of normalize does not always remove shift.
     if (event.key().states().testAny(
             KeyStates{KeyState::Ctrl, KeyState::Super})) {
@@ -435,7 +480,7 @@ void KeyboardEngine::keyEvent(const InputMethodEntry &entry, KeyEvent &event) {
     auto range = utf8::MakeUTF8CharRange(compose);
     for (auto i = std::begin(range); i != std::end(range); ++i) {
         // If char will break the word, commit the compose char.
-        if (!validChars.count(*i) || !state->updateBuffer(i.view())) {
+        if (!validChars.contains(*i) || !state->updateBuffer(i.view())) {
             state->commitBuffer();
             inputContext->commitString(std::string(i.view()));
         }
@@ -450,14 +495,16 @@ void KeyboardEngine::keyEvent(const InputMethodEntry &entry, KeyEvent &event) {
           event.key().checkKeyList(FCITX_HYPHEN_APOS)))) {
         auto text = Key::keySymToUTF8(event.key().sym());
         if (!text.empty() && state->updateBuffer(text)) {
-            return event.filterAndAccept();
+            event.filterAndAccept();
+            return;
         }
     }
 
     // At this point, compose is already handled. The remaining is key event
     // and now we want to forward key.
     if (consumeKey) {
-        return event.filterAndAccept();
+        event.filterAndAccept();
+        return;
     }
 
     // if we reach here, just commit and discard buffer.
@@ -472,7 +519,7 @@ bool KeyboardEngine::supportHint(const std::string &language) {
     return hasSpell || hasEmoji;
 }
 
-void KeyboardEngineState::setPreedit() {
+void KeyboardEngineState::setPreedit() const {
     const bool useClientPreedit =
         inputContext_->capabilityFlags().test(CapabilityFlag::Preedit);
     auto preeditText = preeditString();
@@ -499,7 +546,7 @@ void KeyboardEngineState::setPreedit() {
 void KeyboardEngineState::updateCandidate(const InputMethodEntry &entry) {
     inputContext_->inputPanel().reset();
     std::vector<std::pair<std::string, std::string>> results;
-    if (auto spell = engine_->spell()) {
+    if (auto *spell = engine_->spell()) {
         results = spell->call<ISpell::hintForDisplay>(
             entry.languageCode(), SpellProvider::Default, buffer_.userInput(),
             engine_->config().pageSize.value());
@@ -540,7 +587,7 @@ void KeyboardEngine::resetState(InputContext *inputContext) {
     state->reset();
 }
 
-void KeyboardEngine::deactivate(const InputMethodEntry &,
+void KeyboardEngine::deactivate(const InputMethodEntry & /*entry*/,
                                 InputContextEvent &event) {
     auto *inputContext = event.inputContext();
     auto *state = inputContext->propertyFor(&factory_);
@@ -556,7 +603,8 @@ void KeyboardEngine::deactivate(const InputMethodEntry &,
     inputContext->updateUserInterface(UserInterfaceComponent::InputPanel);
 }
 
-void KeyboardEngine::reset(const InputMethodEntry &, InputContextEvent &event) {
+void KeyboardEngine::reset(const InputMethodEntry & /*entry*/,
+                           InputContextEvent &event) {
     auto *inputContext = event.inputContext();
     auto *state = inputContext->propertyFor(&factory_);
     state->reset();
@@ -565,7 +613,7 @@ void KeyboardEngine::reset(const InputMethodEntry &, InputContextEvent &event) {
     inputContext->updateUserInterface(UserInterfaceComponent::InputPanel);
 }
 
-void KeyboardEngine::invokeActionImpl(const InputMethodEntry &,
+void KeyboardEngine::invokeActionImpl(const InputMethodEntry & /*entry*/,
                                       InvokeActionEvent &event) {
     auto *inputContext = event.inputContext();
     auto *state = inputContext->propertyFor(&factory_);
@@ -685,7 +733,7 @@ bool KeyboardEngineState::handleLongPress(const KeyEvent &event) {
         event.rawKey().states().test(KeyState::Repeat) &&
         *engine_->config().enableLongPress &&
         !engine_->isBlockedForLongPress(inputContext->program())) {
-        if (auto results = findValue(engine_->longPressData(), keystr)) {
+        if (const auto *results = findValue(engine_->longPressData(), keystr)) {
             if (repeatStarted_) {
                 return true;
             }
@@ -724,9 +772,8 @@ bool KeyboardEngineState::handleLongPress(const KeyEvent &event) {
 bool KeyboardEngineState::handleSpellModeTrigger(const InputMethodEntry &entry,
                                                  const KeyEvent &event) {
     // check the spell trigger key
-    if ((event.key().checkKeyList(engine_->config().hintTrigger.value()) ||
-         event.origKey().normalize().checkKeyList(
-             engine_->config().hintTrigger.value())) &&
+    if (event.checkKeyList(engine_->config().hintTrigger.value(),
+                           KeyEventMatchingMode::MatchAllNormalizedKeys) &&
         engine_->supportHint(entry.languageCode())) {
         enableWordHint_ = !enableWordHint_;
         oneTimeEnableWordHint_ = false;
@@ -736,10 +783,8 @@ bool KeyboardEngineState::handleSpellModeTrigger(const InputMethodEntry &entry,
     }
 
     // check the spell trigger key
-    if ((event.key().checkKeyList(
-             engine_->config().oneTimeHintTrigger.value()) ||
-         event.origKey().normalize().checkKeyList(
-             engine_->config().oneTimeHintTrigger.value())) &&
+    if (event.checkKeyList(engine_->config().oneTimeHintTrigger.value(),
+                           KeyEventMatchingMode::MatchAllNormalizedKeys) &&
         engine_->supportHint(entry.languageCode())) {
         bool oldOneTime = oneTimeEnableWordHint_;
         enableWordHint_ = false;
@@ -752,7 +797,8 @@ bool KeyboardEngineState::handleSpellModeTrigger(const InputMethodEntry &entry,
     return false;
 }
 
-bool KeyboardEngineState::handleCandidateSelection(const KeyEvent &event) {
+bool KeyboardEngineState::handleCandidateSelection(
+    const KeyEvent &event) const {
     // check if we can select candidate.
     auto candList = inputContext_->inputPanel().candidateList();
     if (!candList) {
@@ -766,11 +812,11 @@ bool KeyboardEngineState::handleCandidateSelection(const KeyEvent &event) {
 
     auto *movable = candList->toCursorMovable();
     if (movable) {
-        if (event.key().checkKeyList(*engine_->config().nextCandidate)) {
+        if (event.checkKeyList(*engine_->config().nextCandidate)) {
             movable->nextCandidate();
             return true;
         }
-        if (event.key().checkKeyList(*engine_->config().prevCandidate)) {
+        if (event.checkKeyList(*engine_->config().prevCandidate)) {
             movable->prevCandidate();
             return true;
         }
@@ -810,7 +856,6 @@ std::string KeyboardEngineState::preeditString() const {
 
 std::string KeyboardEngineState::currentSelection() const {
     auto candidateList = inputContext_->inputPanel().candidateList();
-    std::string preedit;
     if (mode_ == CandidateMode::Hint) {
         if (candidateList && candidateList->cursorIndex() >= 0) {
             if (const auto *candidate =
@@ -821,7 +866,8 @@ std::string KeyboardEngineState::currentSelection() const {
             }
         }
         return buffer_.userInput();
-    } else if (mode_ == CandidateMode::LongPress) {
+    }
+    if (mode_ == CandidateMode::LongPress) {
         if (candidateList && candidateList->cursorIndex() >= 0) {
             if (const auto *candidate =
                     dynamic_cast<const LongPressCandidateWord *>(
@@ -908,3 +954,5 @@ bool KeyboardEngineState::handleBackspace(const InputMethodEntry &entry) {
 }
 
 } // namespace fcitx
+
+FCITX_ADDON_FACTORY_V2(keyboard, fcitx::KeyboardEngineFactory);

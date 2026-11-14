@@ -7,13 +7,16 @@
 #ifndef _FCITX_UTILS_DBUS_BUS_H_
 #define _FCITX_UTILS_DBUS_BUS_H_
 
+#include <cstdint>
+#include <memory>
 #include <string>
-#include <vector>
 #include <fcitx-utils/dbus/matchrule.h>
 #include <fcitx-utils/dbus/message.h>
 #include <fcitx-utils/dbus/objectvtable.h>
 #include <fcitx-utils/event.h>
-#include "fcitx-utils/macros.h"
+#include <fcitx-utils/fcitxutils_export.h>
+#include <fcitx-utils/flags.h>
+#include <fcitx-utils/macros.h>
 
 /// \addtogroup FcitxUtils
 /// \{
@@ -90,7 +93,7 @@ public:
      * @return registration succeeds or not.
      */
     bool addObjectVTable(const std::string &path, const std::string &interface,
-                         ObjectVTableBase &obj);
+                         ObjectVTableBase &vtable);
 
     /// Create a new signal message
     Message createSignal(const char *path, const char *interface,
@@ -101,14 +104,14 @@ public:
                              const char *interface, const char *member);
 
     /**
-     * Return the name of the compiled implentation of fcitx dbus
+     * Return the name of the compiled implementation of fcitx dbus
      *
      * @return "sdbus" or "libdbus"
      */
     static const char *impl();
 
     /**
-     * Return the internal pointer of the implemenation.
+     * Return the internal pointer of the implementation.
      *
      * @return internal pointer
      */

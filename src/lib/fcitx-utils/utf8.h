@@ -12,11 +12,18 @@
 /// \file
 /// \brief C++ Utility functions for handling utf8 strings.
 
+#include <sys/types.h>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <fcitx-utils/cutf8.h>
+#include <fcitx-utils/fcitxutils_export.h>
+#include <fcitx-utils/macros.h>
 #include <fcitx-utils/misc.h>
-#include "fcitxutils_export.h"
 
 namespace fcitx::utf8 {
 
@@ -221,6 +228,122 @@ auto MakeUTF8CharRange(const T &str) {
     return MakeIterRange(MakeUTF8CharIterator(std::begin(str), std::end(str)),
                          MakeUTF8CharIterator(std::end(str), std::end(str)));
 }
+
+template <typename Iter>
+class UTF8StringViewIter {
+public:
+    using iterator_category = std::input_iterator_tag;
+    using value_type = std::string_view;
+    using difference_type = std::ptrdiff_t;
+    using reference = const value_type &;
+    using pointer = const value_type *;
+
+    UTF8StringViewIter(Iter iter, Iter end) : iter_(iter), end_(end) {
+        update();
+    }
+    FCITX_INLINE_DEFINE_DEFAULT_DTOR_AND_COPY(UTF8StringViewIter)
+
+    reference operator*() const { return currentView_; }
+
+    pointer operator->() const { return &currentView_; }
+
+    size_t charLength() const { return currentView_.size(); }
+
+    uint32_t chr() const { return currentChar_; }
+
+    UTF8StringViewIter &operator++() {
+        iter_ = next_;
+        update();
+        return *this;
+    }
+
+    UTF8StringViewIter operator++(int) {
+        auto old = *this;
+        ++(*this);
+        return old;
+    }
+
+    bool operator==(const UTF8StringViewIter &other) {
+        return iter_ == other.iter_;
+    }
+    bool operator!=(const UTF8StringViewIter &other) {
+        return !operator==(other);
+    }
+
+private:
+    void update() {
+        next_ = getNextChar(iter_, end_, &currentChar_);
+        if (iter_ != end_ && iter_ == next_) {
+            throw std::runtime_error("Invalid UTF8 character.");
+        }
+        currentView_ = std::string_view(&*iter_, std::distance(iter_, next_));
+    }
+
+    std::string_view currentView_;
+    uint32_t currentChar_ = 0;
+    Iter iter_;
+    Iter next_;
+    Iter end_;
+};
+
+template <typename Iter>
+auto MakeUTF8StringViewIterator(Iter iter, Iter end) {
+    return UTF8StringViewIter<Iter>(iter, end);
+}
+
+template <typename T>
+auto MakeUTF8StringViewRange(const T &str) {
+    return MakeIterRange(
+        MakeUTF8StringViewIterator(std::begin(str), std::end(str)),
+        MakeUTF8StringViewIterator(std::end(str), std::end(str)));
+}
+
+/**
+ * Replace invalid UTF-8 sequences in-place with given byte.
+ *
+ * The string length will be retained.
+ * For invalid sequence, first byte will be replaced and parse will move to
+ * next. For incomplete sequence, first byte and all continuation bytes will be
+ * replaced and parse will resume after that.
+ *
+ * @param str input string
+ * @param replacement The byte value used to replace.
+ * @return Whether any replacement happened.
+ *
+ * @since 5.1.18
+ */
+FCITXUTILS_EXPORT bool replaceInvalidInplace(std::string &str,
+                                             char replacement);
+/**
+ * Replace invalid UTF-8 sequences with given byte.
+ *
+ * The string length will be retained.
+ *
+ * @param str input string
+ * @param replacement The byte value used to replace.
+ * @see replaceInvalidInplace
+ *
+ * @since 5.1.18
+ */
+FCITXUTILS_EXPORT std::string replaceInvalid(std::string_view str,
+                                             char replacement);
+
+/**
+ * Check if the byte is a utf8 continuation byte.
+ * @param c input byte
+ * @return true if it is a continuation byte.
+ * @since 5.1.18
+ */
+inline bool isContinuationByte(char c) {
+    return (static_cast<uint8_t>(c) & 0xC0) == 0x80;
+}
+
+#ifdef _WIN32
+
+std::string UTF16ToUTF8(std::wstring_view data);
+std::wstring UTF8ToUTF16(std::string_view str);
+
+#endif
 
 } // namespace fcitx::utf8
 

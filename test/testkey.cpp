@@ -11,7 +11,9 @@
 #include "fcitx-utils/keydata.h"
 #include "fcitx-utils/keynametable-compat.h"
 #include "fcitx-utils/keynametable.h"
+#include "fcitx-utils/keysym.h"
 #include "fcitx-utils/log.h"
+#include "fcitx-utils/macros.h"
 
 #define CHECK_ARRAY_ORDER(ARRAY, COMPARE_FUNC)                                 \
     for (size_t i = 0; i < FCITX_ARRAY_SIZE(ARRAY) - 1; i++) {                 \
@@ -75,6 +77,12 @@ int main() {
     FCITX_ASSERT(
         fcitx::Key("Shift+F4").check(fcitx::Key("Shift+F4").normalize()));
     FCITX_ASSERT(
+        fcitx::Key("Shift+Tab").check(fcitx::Key("Shift+Tab").normalize()));
+    FCITX_ASSERT(fcitx::Key("Shift+Return")
+                     .check(fcitx::Key("Shift+Return").normalize()));
+    FCITX_ASSERT(
+        fcitx::Key("Shift+space").check(fcitx::Key("Shift+space").normalize()));
+    FCITX_ASSERT(
         fcitx::Key("Control+A").check(fcitx::Key("Control+a").normalize()));
     FCITX_ASSERT(fcitx::Key("Alt+exclam")
                      .check(fcitx::Key("Alt+Shift+exclam").normalize()));
@@ -83,6 +91,8 @@ int main() {
     FCITX_ASSERT(fcitx::Key("`").sym() == FcitxKey_grave);
     FCITX_ASSERT(fcitx::Key("Alt+Shift+Shift_L")
                      .isReleaseOfModifier(fcitx::Key("Alt+Shift_L")));
+    FCITX_ASSERT(!fcitx::Key("Alt+Shift+Shift_R")
+                      .isReleaseOfModifier(fcitx::Key("Alt+Shift_L")));
     FCITX_ASSERT(fcitx::Key("Alt+Shift+Meta_L")
                      .isReleaseOfModifier(fcitx::Key("Alt+Shift_L")));
     FCITX_ASSERT(fcitx::Key("Alt+Shift+Meta_R")
@@ -150,7 +160,9 @@ int main() {
     FCITX_INFO() << fcitx::Key::keySymToString(
         FcitxKey_Insert, fcitx::KeyStringFormat::Localized);
     FCITX_ASSERT(fcitx::Key::keySymToUnicode(
-                     static_cast<fcitx::KeySym>(0x100fdd7)) == 0);
+                     static_cast<fcitx::KeySym>(0x100fdd7)) == 0xfdd7);
+    FCITX_ASSERT(fcitx::Key::keySymToUnicode(
+                     static_cast<fcitx::KeySym>(0x120fdd7)) == 0);
 
     return 0;
 }

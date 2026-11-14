@@ -8,8 +8,23 @@
 #define _FCITX5_FRONTEND_WAYLANDIM_WAYLANDIMSERVERV2_H_
 
 #include <cstdint>
-#include "fcitx-utils/event.h"
+#include <memory>
+#include <optional>
+#include <string>
+#include <tuple>
+#include <unordered_map>
+#include <vector>
+#include <wayland-client-core.h>
+#include "fcitx-utils/eventloopinterface.h"
+#include "fcitx-utils/key.h"
+#include "fcitx-utils/keysymgen.h"
 #include "fcitx-utils/misc_p.h"
+#include "fcitx-utils/signals.h"
+#include "fcitx/event.h"
+#include "fcitx/focusgroup.h"
+#include "fcitx/inputcontext.h"
+#include "fcitx/inputcontextmanager.h"
+#include "fcitx/instance.h"
 #include "virtualinputcontext.h"
 #include "waylandimserverbase.h"
 #include "zwp_input_method_keyboard_grab_v2.h"
@@ -84,19 +99,22 @@ public:
 
 protected:
     void commitStringDelegate(const InputContext * /*ic*/,
-                              const std::string &text) const override {
+                              const std::string &text) override {
         if (!ic_) {
             return;
         }
-        ic_->commitString(text.c_str());
-        ic_->commit(serial_);
+
+        WaylandIMServerBase::commitStringWrapper(text, [this](const char *str) {
+            ic_->commitString(str);
+            ic_->commit(serial_);
+        });
     }
     void deleteSurroundingTextDelegate(InputContext *ic, int offset,
-                                       unsigned int size) const override;
+                                       unsigned int size) override;
     void forwardKeyDelegate(InputContext * /*ic*/,
-                            const ForwardKeyEvent &key) const override;
+                            const ForwardKeyEvent &key) override;
 
-    void updatePreeditDelegate(InputContext *ic) const override;
+    void updatePreeditDelegate(InputContext *ic) override;
 
 private:
     void repeat();
@@ -113,7 +131,10 @@ private:
                            uint32_t mods_latched, uint32_t mods_locked,
                            uint32_t group);
     void repeatInfoCallback(int32_t rate, int32_t delay);
-    void sendKeyToVK(uint32_t time, const Key &key, uint32_t state) const;
+    void sendKeyToVK(uint32_t time, const Key &key, uint32_t state);
+
+    int32_t repeatRate() const;
+    int32_t repeatDelay() const;
 
     WaylandIMServerV2 *server_;
     std::shared_ptr<wayland::WlSeat> seat_;
@@ -134,7 +155,7 @@ private:
     uint32_t repeatTime_ = 0;
     KeySym repeatSym_ = FcitxKey_None;
 
-    int32_t repeatRate_ = 40, repeatDelay_ = 400;
+    std::optional<std::tuple<int32_t, int32_t>> repeatInfo_;
 
     mutable OrderedMap<uint32_t, uint32_t> pressedVKKey_;
 };

@@ -7,7 +7,6 @@
 
 #include "xcbconnection.h"
 #include <stdexcept>
-#include <fmt/format.h>
 #include <xcb/randr.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_aux.h>
@@ -15,7 +14,6 @@
 #include <xcb/xproto.h>
 #include "fcitx-utils/log.h"
 #include "fcitx-utils/misc.h"
-#include "fcitx-utils/stringutils.h"
 #include "fcitx/inputcontext.h"
 #include "fcitx/inputcontextmanager.h"
 #include "fcitx/inputmethodmanager.h"
@@ -91,7 +89,7 @@ bool xrandrCheckXWayland(xcb_connection_t *conn, xcb_screen_t *screen) {
             reinterpret_cast<char *>(
                 xcb_randr_get_output_info_name(output.get())),
             xcb_randr_get_output_info_name_length(output.get()));
-        if (stringutils::startsWith(outputName, "XWAYLAND")) {
+        if (outputName.starts_with("XWAYLAND")) {
             return true;
         }
     }
@@ -173,6 +171,17 @@ XCBConnection::XCBConnection(XCBModule *xcb, const std::string &name)
             if (xfixes_query && xfixes_query->major_version >= 2) {
                 hasXFixes_ = true;
                 xfixesFirstEvent_ = reply->first_event;
+
+#ifdef XCB_XFIXES_SET_CLIENT_DISCONNECT_MODE
+                if (xfixes_query->major_version >= 6 &&
+                    parent_->isClientDisconnectModeTerminate()) {
+                    FCITX_XCB_INFO()
+                        << "Set XFIXES client disconnect mode to TERMINATE";
+                    xcb_xfixes_set_client_disconnect_mode(
+                        conn_.get(),
+                        XCB_XFIXES_CLIENT_DISCONNECT_FLAGS_TERMINATE);
+                }
+#endif
             }
         }
     }
@@ -339,7 +348,6 @@ void XCBConnection::processEvent() {
             }
         }
     }
-    reader_->wakeUp();
 }
 
 bool XCBConnection::filterEvent(xcb_connection_t *,
@@ -423,7 +431,7 @@ bool XCBConnection::filterEvent(xcb_connection_t *,
 
 #ifdef WAYLAND_FOUND
                 // When wayland im is used, don't grab keyboard again, otherwise
-                // we may get same event twice. Whne wayland keyboard grab is
+                // we may get same event twice. When wayland keyboard grab is
                 // active, we will rely on wayland im to handle group switching
                 // key.
                 // This allows KDE Plasma's X11 legacy support to work
@@ -436,8 +444,8 @@ bool XCBConnection::filterEvent(xcb_connection_t *,
                              .foreachFocused([](InputContext *ic) {
                                  // Main wayland display, but not wayland im.
                                  if (ic->display() == "wayland:" &&
-                                     !stringutils::startsWith(
-                                         ic->frontendName(), "wayland")) {
+                                     !ic->frontendName().starts_with(
+                                         "wayland")) {
                                      return false;
                                  }
                                  return true;
@@ -554,9 +562,7 @@ void XCBConnection::navigateGroup(const Key &key, bool forward) {
         parent_->notifications()->call<INotifications::showTip>(
             "enumerate-group", _("Input Method"), "input-keyboard",
             _("Switch group"),
-            fmt::format(_("Switch group to {0}"),
-                        imManager.groups()[groupIndex_]),
-            3000);
+            _("Switch group to {0}", imManager.groups()[groupIndex_]), 3000);
     }
 }
 

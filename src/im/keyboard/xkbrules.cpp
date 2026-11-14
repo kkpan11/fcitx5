@@ -6,8 +6,17 @@
  */
 
 #include "xkbrules.h"
+#include <algorithm>
+#include <cstddef>
 #include <cstring>
+#include <filesystem>
+#include <initializer_list>
+#include <iterator>
 #include <list>
+#include <string>
+#include <utility>
+#include <vector>
+#include <ranges>
 #include "fcitx-utils/stringutils.h"
 #include "xmlparser.h"
 
@@ -34,8 +43,8 @@ struct XkbRulesParseState : public XMLParser {
                           array.begin());
     }
 
-    void startElement(const XML_Char *name, const XML_Char **attrs) override {
-        parseStack_.emplace_back(reinterpret_cast<const char *>(name));
+    void startElement(const char *name, const char **attrs) override {
+        parseStack_.emplace_back(std::string(name));
         textBuff_.clear();
 
         if (match({"layoutList", "layout", "configItem"})) {
@@ -46,33 +55,28 @@ struct XkbRulesParseState : public XMLParser {
             modelInfos_.emplace_back();
         } else if (match({"optionList", "group"})) {
             optionGroupInfos_.emplace_back();
-            int i = 0;
-            while (attrs && attrs[i * 2] != 0) {
-                if (strcmp(reinterpret_cast<const char *>(attrs[i * 2]),
-                           "allowMultipleSelection") == 0) {
+            ptrdiff_t i = 0;
+            while (attrs && attrs[i * 2] != nullptr) {
+                if (strcmp(attrs[i * 2], "allowMultipleSelection") == 0) {
                     optionGroupInfos_.back().exclusive =
-                        (strcmp(
-                             reinterpret_cast<const char *>(attrs[i * 2 + 1]),
-                             "true") != 0);
+                        (strcmp(attrs[(i * 2) + 1], "true") != 0);
                 }
                 i++;
             }
         } else if (match({"optionList", "group", "option"})) {
             optionGroupInfos_.back().optionInfos.emplace_back();
         } else if (match({"xkbConfigRegistry"})) {
-            int i = 0;
-            while (attrs && attrs[i * 2] != 0) {
-                if (strcmp(reinterpret_cast<const char *>(attrs[i * 2]),
-                           "version") == 0 &&
-                    strlen(reinterpret_cast<const char *>(attrs[i * 2 + 1])) !=
-                        0) {
-                    version_ = reinterpret_cast<const char *>(attrs[i * 2 + 1]);
+            ptrdiff_t i = 0;
+            while (attrs && attrs[i * 2] != nullptr) {
+                if (strcmp(attrs[i * 2], "version") == 0 &&
+                    strlen(attrs[(i * 2) + 1]) != 0) {
+                    version_ = attrs[(i * 2) + 1];
                 }
                 i++;
             }
         }
     }
-    void endElement(const XML_Char *) override {
+    void endElement(const char * /*name*/) override {
         auto text = stringutils::trimView(textBuff_);
         if (!text.empty()) {
             if (match({"layoutList", "layout", "configItem", "name"})) {
@@ -123,8 +127,8 @@ struct XkbRulesParseState : public XMLParser {
         textBuff_.clear();
         parseStack_.pop_back();
     }
-    void characterData(const XML_Char *ch, int len) override {
-        textBuff_.append(reinterpret_cast<const char *>(ch), len);
+    void characterData(const char *ch, int len) override {
+        textBuff_.append(ch, len);
     }
 
     void merge(XkbRules *rules) {
@@ -139,6 +143,12 @@ struct XkbRulesParseState : public XMLParser {
                 std::string name = info.name;
                 rules->layoutInfos_.emplace(std::move(name), std::move(info));
             } else {
+                if (iter->second.description.empty()) {
+                    iter->second.description = info.description;
+                }
+                if (iter->second.shortDescription.empty()) {
+                    iter->second.shortDescription = info.shortDescription;
+                }
                 iter->second.languages.insert(
                     iter->second.languages.end(),
                     std::make_move_iterator(info.languages.begin()),
@@ -152,28 +162,29 @@ struct XkbRulesParseState : public XMLParser {
     }
 };
 
-bool XkbRules::read(const std::vector<std::string> &directories,
+bool XkbRules::read(const std::vector<std::filesystem::path> &directories,
                     const std::string &name, const std::string &extraFile) {
     clear();
 
-    for (const auto &directory : directories) {
-        std::string fileName = stringutils::joinPath(
-            directory, "rules", stringutils::concat(name, ".xml"));
+    bool success = false;
+    for (const auto &directory : directories | std::views::reverse) {
+        const auto fileName = directory / "rules" / (name + ".xml");
+
         {
             XkbRulesParseState state;
             state.rules_ = this;
-            if (!state.parse(fileName)) {
-                return false;
+            if (state.parse(fileName)) {
+                success = true;
+                state.merge(this);
             }
-            state.merge(this);
         }
 
-        std::string extraFileName = stringutils::joinPath(
-            directory, "rules", stringutils::concat(name, ".extras.xml"));
+        const auto extraFileName = directory / "rules" / (name + ".extras.xml");
         {
             XkbRulesParseState state;
             state.rules_ = this;
             if (state.parse(extraFileName)) {
+                success = true;
                 state.merge(this);
             }
         }
@@ -183,10 +194,11 @@ bool XkbRules::read(const std::vector<std::string> &directories,
         XkbRulesParseState state;
         state.rules_ = this;
         if (state.parse(extraFile)) {
+            success = true;
             state.merge(this);
         }
     }
-    return true;
+    return success;
 }
 
 #ifdef _TEST_XKBRULES

@@ -18,9 +18,11 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <fcitx-utils/fcitxutils_export.h>
 #include <fcitx-utils/flags.h>
 #include <fcitx-utils/keysym.h>
-#include "fcitxutils_export.h"
+#include <fcitx-utils/macros.h>
+#include <ranges>
 
 namespace fcitx {
 class Key;
@@ -215,13 +217,18 @@ public:
         return result;
     }
 
-    /// Check the current key against a key list.
-    /// \see fcitx::Key::check
+    /**
+     * Check the current key against a key list.
+     *
+     * Prefer KeyEvent::checkKeyList for key event.
+     * @see fcitx::Key::check
+     * @see fcitx::KeyEvent::checkKeyList
+     */
     template <typename Container>
     bool checkKeyList(const Container &c) const {
-        return std::find_if(c.begin(), c.end(), [this](const Key &toCheck) {
+        return std::ranges::find_if(c, [this](const Key &toCheck) {
                    return check(toCheck);
-               }) != c.end();
+               }) != std::ranges::end(c);
     }
 
     /// Check the current key against a key list and get the matched key index.

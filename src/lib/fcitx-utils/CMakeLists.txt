@@ -1,54 +1,61 @@
 set(FCITX_UTILS_SOURCES)
+set(FCITX_UTILS_DEPS)
 
 if (ENABLE_DBUS)
 
-    set(FCITX_UTILS_SOURCES
-        ${FCITX_UTILS_SOURCES}
+    list(APPEND FCITX_UTILS_SOURCES
         dbus/servicewatcher.cpp
         dbus/matchrule.cpp
         dbus/variant.cpp
         dbus/objectvtable.cpp
     )
 
-    if (NOT TARGET Systemd::Systemd)
-        set(FCITX_UTILS_SOURCES
-            ${FCITX_UTILS_SOURCES}
-            dbus/libdbus/bus.cpp
-            dbus/libdbus/message.cpp
-            dbus/libdbus/objectvtable_libdbus.cpp
-            dbus/libdbus/servicenamecache.cpp)
-    else()
-        set(FCITX_UTILS_SOURCES
-            ${FCITX_UTILS_SOURCES}
+    if (FCITX_EVENT_LOOP_BACKEND STREQUAL "systemd")
+        list(APPEND FCITX_UTILS_SOURCES
             dbus/sdbus/bus.cpp
             dbus/sdbus/message.cpp
             dbus/sdbus/objectvtablewrapper.c
             dbus/sdbus/objectvtable_sdbus.cpp)
+    else()
+        list(APPEND FCITX_UTILS_SOURCES
+            dbus/libdbus/bus.cpp
+            dbus/libdbus/message.cpp
+            dbus/libdbus/objectvtable_libdbus.cpp
+            dbus/libdbus/servicenamecache.cpp)
+        list(APPEND FCITX_UTILS_DEPS PkgConfig::DBus)
     endif()
 endif()
 
-if (NOT TARGET Systemd::Systemd)
-  set(FCITX_UTILS_SOURCES
-    ${FCITX_UTILS_SOURCES}
-    event_libuv.cpp)
+if (WIN32)
+    list(APPEND FCITX_UTILS_SOURCES
+        standardpaths_p_win.cpp
+    )
 else()
-  set(FCITX_UTILS_SOURCES
-    ${FCITX_UTILS_SOURCES}
-    event_sdevent.cpp)
+    list(APPEND FCITX_UTILS_SOURCES
+        standardpaths_p_unix.cpp
+    )
 endif()
 
-set(FCITX_UTILS_SOURCES
-    ${FCITX_UTILS_SOURCES}
+if (FCITX_EVENT_LOOP_BACKEND STREQUAL "libuv")
+    list(APPEND FCITX_UTILS_SOURCES event_libuv.cpp)
+    list(APPEND FCITX_UTILS_DEPS "${LIBUV_TARGET}")
+elseif (FCITX_EVENT_LOOP_BACKEND STREQUAL "systemd")
+    list(APPEND FCITX_UTILS_SOURCES event_sdevent.cpp)
+    list(APPEND FCITX_UTILS_DEPS Systemd::Systemd)
+elseif (FCITX_EVENT_LOOP_BACKEND STREQUAL "none")
+    list(APPEND FCITX_UTILS_SOURCES event_none.cpp)
+endif()
+
+list(APPEND FCITX_UTILS_SOURCES
     stringutils.cpp
     testing.cpp
     key.cpp
     cutf8.cpp
     color.cpp
     i18nstring.cpp
-    event_common.cpp
     eventdispatcher.cpp
-    library.cpp
     fs.cpp
+    fs_deprecated.cpp
     standardpath.cpp
     unixfd.cpp
     utf8.cpp
@@ -60,7 +67,18 @@ set(FCITX_UTILS_SOURCES
     misc.cpp
     semver.cpp
     keydata.cpp
+    event.cpp
+    eventloopinterface.cpp
+    environ.cpp
+    fdstreambuf.cpp
+    mappedbuffer.cpp
+    standardpaths.cpp
     )
+
+if(HAVE_NO_DEPRECATED_DECLARATIONS)
+    set_source_files_properties(fs_deprecated.cpp PROPERTIES COMPILE_FLAGS "-Wno-deprecated-declarations")
+    set_source_files_properties(standardpath.cpp PROPERTIES COMPILE_FLAGS "-Wno-deprecated-declarations")
+endif()
 
 set(FCITX_UTILS_HEADERS
     macros.h
@@ -70,8 +88,8 @@ set(FCITX_UTILS_HEADERS
     color.h
     i18nstring.h
     event.h
+    eventloopinterface.h
     eventdispatcher.h
-    library.h
     cutf8.h
     fs.h
     standardpath.h
@@ -90,7 +108,6 @@ set(FCITX_UTILS_HEADERS
     intrusivelist.h
     misc.h
     utf8.h
-    cutf8.h
     element.h
     rect.h
     charutils.h
@@ -101,17 +118,31 @@ set(FCITX_UTILS_HEADERS
     log.h
     testing.h
     semver.h
+    environ.h
+    fdstreambuf.h
+    mappedbuffer.h
+    standardpaths.h
+    # Experimental for now.
+    # coroutine.h
     ${CMAKE_CURRENT_BINARY_DIR}/fcitxutils_export.h
     )
 
+if (ENABLE_DL)
+    list(APPEND FCITX_UTILS_SOURCES library.cpp)
+    list(APPEND FCITX_UTILS_HEADERS library.h)
+endif()
+
 set(FCITX_UTILS_DBUS_HEADERS
     dbus/message.h
+    dbus/coroutine.h
     dbus/objectvtable.h
     dbus/bus.h
     dbus/message_details.h
     dbus/servicewatcher.h
     dbus/matchrule.h
     dbus/variant.h
+    # Experimental for now.
+    # dbus/coroutine.h
     )
 
 ecm_setup_version(PROJECT
@@ -119,7 +150,7 @@ ecm_setup_version(PROJECT
                   PACKAGE_VERSION_FILE "${CMAKE_CURRENT_BINARY_DIR}/Fcitx5UtilsConfigVersion.cmake"
                   SOVERSION 2)
 
-add_library(Fcitx5Utils SHARED ${FCITX_UTILS_SOURCES})
+add_library(Fcitx5Utils ${FCITX_UTILS_SOURCES})
 set_target_properties(Fcitx5Utils
   PROPERTIES VERSION ${Fcitx5Utils_VERSION}
   SOVERSION ${Fcitx5Utils_SOVERSION}
@@ -127,21 +158,16 @@ set_target_properties(Fcitx5Utils
   )
 target_include_directories(Fcitx5Utils PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/..>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_FULL_INCLUDEDIR}/Fcitx5/Utils>)
-target_link_libraries(Fcitx5Utils PRIVATE DL::DL LibIntl::LibIntl Pthread::Pthread ${FMT_TARGET})
+target_link_libraries(Fcitx5Utils PRIVATE LibIntl::LibIntl Pthread::Pthread)
 if(LIBKVM_FOUND)
     target_link_libraries(Fcitx5Utils PRIVATE LibKVM::LibKVM)
 endif()
-
-if (NOT TARGET Systemd::Systemd)
-    target_link_libraries(Fcitx5Utils PRIVATE ${LIBUV_TARGET})
-    if (ENABLE_DBUS)
-        target_link_libraries(Fcitx5Utils PRIVATE PkgConfig::DBus)
-    endif()
-else()
-    target_link_libraries(Fcitx5Utils PRIVATE Systemd::Systemd)
+if (ENABLE_DL)
+    target_link_libraries(Fcitx5Utils PRIVATE DL::DL)
 endif()
+target_link_libraries(Fcitx5Utils PRIVATE ${FCITX_UTILS_DEPS})
 
 configure_file(Fcitx5Utils.pc.in ${CMAKE_CURRENT_BINARY_DIR}/Fcitx5Utils.pc @ONLY)
 
@@ -169,6 +195,7 @@ install(FILES  "${CMAKE_CURRENT_BINARY_DIR}/Fcitx5UtilsConfig.cmake"
                "${CMAKE_CURRENT_BINARY_DIR}/Fcitx5UtilsConfigVersion.cmake"
                Fcitx5Macros.cmake
                Fcitx5Download.cmake.in
+               Fcitx5ImportAddon.cpp.in
                Fcitx5ModuleTemplate.cmake.in
                "${PROJECT_SOURCE_DIR}/cmake/Fcitx5CompilerSettings.cmake"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Fcitx5Utils
